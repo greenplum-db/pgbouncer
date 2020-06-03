@@ -1,0 +1,110 @@
+## ======================================================================
+## resources
+## ======================================================================
+
+resource_types:
+  - name: pull_request
+    type: docker-image
+    source:
+      repository: jtarchie/pr
+
+  - name: gcs
+    type: docker-image
+    source:
+        repository: frodenas/gcs-resource
+
+resources:
+- name: pgbouncer_pr
+  type: pull_request
+  source:
+    access_token: {{git-access-token}}
+    branch: pgbouncer_1_8_1
+    repo: greenplum-db/pgbouncer
+    uri: https://github.com/greenplum-db/pgbouncer.git
+
+- name: gpdb6-centos6-test
+  type: docker-image
+  source:
+    repository: pivotaldata/gpdb6-centos6-test
+    tag: latest
+
+- name: gpdb6_src
+  type: git
+  source:
+    branch: 6X_STABLE
+    uri: https://github.com/greenplum-db/gpdb.git
+    ignore_paths:
+    - gpdb-doc/*
+    - README*
+
+- name: bin_gpdb6_centos6
+  type: gcs
+  source:
+    bucket: {{gpdb6-bin-bucket-name}}
+    json_key: {{concourse-gcs-resources-service-account-key}}
+    regexp: server/published/gpdb6/server-rc-(.*)-rhel7_x86_64.tar.gz
+
+jobs:
+- name: gpdb6_pgbouncer_test
+  plan:
+  - aggregate:
+    - get: pgbouncer_pr
+      trigger: true
+      version: every
+    - get: gpdb6-centos6-test
+    - get: gpdb6_src
+    - get: bin_gpdb
+      resource: bin_gpdb6_centos6
+  - put: pgbouncer_pr
+    params:
+      path: pgbouncer_pr
+      status: pending
+  - task: build_pgbouncer
+    input_mapping:
+      pgbouncer_src: pgbouncer_pr
+      gpdb_src: gpdb6_src
+    config:
+      platform: linux
+      inputs:
+      - name: pgbouncer_src
+      - name: gpdb_src
+      outputs:
+      - name: pgbouncer_bin
+      run:
+        path: pgbouncer_src/concourse/build.bash
+    image: gpdb6-centos6-test
+    on_failure: &pr_failure
+      put: pgbouncer_pr
+      params:
+        path: pgbouncer_pr
+        status: failure
+    timeout: 30m
+  - task: psql_test
+    input_mapping:
+      pgbouncer_src: pgbouncer_bin
+      gpdb_src: gpdb6_src
+    config:
+      platform: linux
+      inputs:
+      - name: pgbouncer_src
+      - name: gpdb_src
+      - name: bin_gpdb
+      run:
+        path: pgbouncer_src/concourse/psql_test.bash
+    image: gpdb6-centos6-test
+    on_failure: *pr_failure
+    timeout: 30m
+
+
+- name: set-pr-status
+  plan:
+  - aggregate:
+    - get: pgbouncer_pr
+      trigger: true
+      passed:
+      - gpdb6_pgbouncer_test
+  - put: report_pr_success
+    resource: pgbouncer_pr
+    params:
+      path: pgbouncer_pr
+      status: success
