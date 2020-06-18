@@ -47,7 +47,7 @@ static void usage(const char *exe)
 	printf("  -h, --help           show this help, then exit\n");
 	printf("\n");
 	printf("Report bugs to <%s>.\n", PACKAGE_BUGREPORT);
-	printf("%s home page: <%s>\n", PACKAGE_NAME, PACKAGE_URL);
+	//printf("%s home page: <%s>\n", PACKAGE_NAME, PACKAGE_URL);
 	exit(0);
 }
 
