@@ -18,6 +18,8 @@ function build_pgbouncer() {
 
 
 function _main() {
+	yum erase libevent-devel -y
+	yum install libevent2-devel -y
     build_pgbouncer
 }
 

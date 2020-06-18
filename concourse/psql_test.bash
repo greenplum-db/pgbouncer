@@ -29,6 +29,8 @@ function setup_gpdb_cluster() {
 }
 
 function _main(){
+	yum erase libevent-devel -y
+	yum install libevent2-devel -y
     yum install -y sudo
     setup_gpdb_cluster
     chown -R gpadmin:gpadmin pgbouncer_src
