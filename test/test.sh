@@ -99,11 +99,12 @@ MINGW*)
 	;;
 esac
 
+pg_supports_scram=true
 pg_majorversion=$(initdb --version | sed -n $SED_ERE_OP 's/.* ([0-9]+).*/\1/p')
 if test $pg_majorversion -ge 10; then
-	pg_supports_scram=true
+	psql_version_gt10=true
 else
-	pg_supports_scram=false
+	psql_version_gt10=false
 fi
 
 if ! $use_unix_sockets; then
@@ -202,13 +203,23 @@ psql -X -p $PG_PORT -d p0 -c "select * from pg_user" | grep pswcheck > /dev/null
 	psql -X -o /dev/null -p $PG_PORT -c "create user maxedout;" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user longpass with password '$long_password';" p0 || exit 1
 	if $pg_supports_scram; then
-		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user muser1 password 'foo';" p0 || exit 1
-		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user muser2 password 'wrong';" p0 || exit 1
-		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user puser1 password 'foo';" p0 || exit 1
-		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user puser2 password 'wrong';" p0 || exit 1
-		# match SCRAM secret in userlist.txt
-		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'scram-sha-256'; create user scramuser1 password '"'SCRAM-SHA-256$4096:D76gvGUVj9Z4DNiGoabOBg==$RukL0Xo3Ql/2F9FsD7mcQ3GATG2fD3PA71qY1JagGDs=:BhKUwyyivFm7Tq2jDJVXSVRbRDgTWyBilZKgg6DDuYU='"';" p0 || exit 1
-		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'scram-sha-256'; create user scramuser3 password 'baz';" p0 || exit 1
+		if $psql_version_gt10; then
+			psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user muser1 password 'foo';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user muser2 password 'wrong';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user puser1 password 'foo';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user puser2 password 'wrong';" p0 || exit 1
+			# match SCRAM secret in userlist.txt
+			psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'scram-sha-256'; create user scramuser1 password '"'SCRAM-SHA-256$4096:ysjR2q7wOYvuIc3u5M7UnA==$XVR2ALl3y9UOZVi7uZ6nZ8x8K6chMw5PVUiG6R+JKiY=:9R3mfpFL9kWUGT2WZE18aUzRGYyCUtws0iS+V1z0yRw='"';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'scram-sha-256'; create user scramuser3 password 'baz';" p0 || exit 1
+		else
+			psql -X -o /dev/null -p $PG_PORT -c "set password_hash_algorithm = 'md5'; create user muser1 password 'foo';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_hash_algorithm = 'md5'; create user muser2 password 'wrong';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_hash_algorithm = 'md5'; create user puser1 password 'foo';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_hash_algorithm = 'md5'; create user puser2 password 'wrong';" p0 || exit 1
+			# match SCRAM secret in userlist.txt
+			psql -X -o /dev/null -p $PG_PORT -c "set password_hash_algorithm = 'scram-sha-256'; create user scramuser1 password '"'SCRAM-SHA-256$4096:ysjR2q7wOYvuIc3u5M7UnA==$XVR2ALl3y9UOZVi7uZ6nZ8x8K6chMw5PVUiG6R+JKiY=:9R3mfpFL9kWUGT2WZE18aUzRGYyCUtws0iS+V1z0yRw='"';" p0 || exit 1
+			psql -X -o /dev/null -p $PG_PORT -c "set password_hash_algorithm = 'scram-sha-256'; create user scramuser3 password 'baz';" p0 || exit 1
+		fi
 	else
 		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = on; create user muser1 password 'foo';" p0 || exit 1
 		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = on; create user muser2 password 'wrong';" p0 || exit 1

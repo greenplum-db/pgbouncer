@@ -61,6 +61,9 @@ if test $pg_majorversion -ge 10; then
 else
 	pg_supports_scram=false
 fi
+# Because gpdb6 has supported scram-sha-256, but the psql version is not changed,
+# so we enable scram test for it.
+pg_supports_scram=true
 
 stopit() {
 	local pid
