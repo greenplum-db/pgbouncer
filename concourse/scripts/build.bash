@@ -11,7 +11,7 @@ function build_pgbouncer() {
     git submodule init
     git submodule update
     ./autogen.sh
-    ./configure --prefix=${HOME_DIR}/bin_pgbouncer/ --enable-evdns --with-pam --with-openssl
+    ./configure --prefix=${HOME_DIR}/bin_pgbouncer/ --enable-evdns --with-pam --with-openssl --with-ldap
     make install
     popd
 }

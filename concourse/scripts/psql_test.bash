@@ -9,7 +9,7 @@ source "${CWDIR}/common.bash"
 function setup_gpdb_cluster() {
     export TEST_OS=centos
     #export PGPORT=15432
-    export CONFIGURE_FLAGS=" --with-openssl"
+    export CONFIGURE_FLAGS=" --with-openssl --with-ldap"
     if [ ! -f "bin_gpdb/bin_gpdb.tar.gz" ];then
         mv bin_gpdb/*.tar.gz bin_gpdb/bin_gpdb.tar.gz
     fi
@@ -27,9 +27,21 @@ function setup_gpdb_cluster() {
     . /usr/local/greenplum-db-devel/greenplum_path.sh
     . gpdb_src/gpAux/gpdemo/gpdemo-env.sh
 }
+function install_openldap() {
+    local os=""
+    if [ -f /etc/redhat-release ];then
+          os="centos"
+    fi
+    if [ x$os == "xcentos" ];then
+        yum install -y openldap-servers openldap-clients
+    else
+        echo "Platform not support"
+    fi
+}
 
 function _main(){
     #yum install -y sudo
+    install_openldap
     setup_gpdb_cluster
     chown -R gpadmin:gpadmin pgbouncer_src
     echo "gpadmin ALL=(ALL)       NOPASSWD: ALL" >> /etc/sudoers

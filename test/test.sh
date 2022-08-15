@@ -201,6 +201,7 @@ psql -X -p $PG_PORT -d p0 -c "select * from pg_user" | grep pswcheck > /dev/null
 	psql -X -o /dev/null -p $PG_PORT -c "create user someuser with password 'anypasswd';" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user maxedout;" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user longpass with password '$long_password';" p0 || exit 1
+	psql -X -o /dev/null -p $PG_PORT -c "create user ldapuser1" p0 || exit 1
 	if $pg_supports_scram; then
 		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user muser1 password 'foo';" p0 || exit 1
 		psql -X -o /dev/null -p $PG_PORT -c "set password_encryption = 'md5'; create user muser2 password 'wrong';" p0 || exit 1
@@ -1328,6 +1329,92 @@ test_cancel_pool_size() {
 
 	return 0
 }
+# Test ldap authentication
+test_ldap_authentication() {
+	osname=$(uname -s)
+	if [ $osname != "Linux" ];then 
+		return 77
+	fi
+	slapd=/usr/sbin/slapd
+	if [ -d '/etc/ldap/schema' ]
+	then
+		ldap_schema_dir='/etc/ldap/schema'
+	else
+		ldap_schema_dir='/etc/openldap/schema'
+	fi
+	if [ ! -e $slapd ];then
+		return 77
+	fi
+
+	ldap_pwd=$(pwd)/ldap
+
+	ldap_datadir="${ldap_pwd}/openldap-data"
+	slapd_conf="${ldap_pwd}/slapd.conf"
+	slapd_pidfile="${ldap_pwd}/slapd.pid"
+	slapd_logfile="${ldap_pwd}/slapd.log"
+	ldap_conf="${ldap_pwd}/ldap.conf"
+	ldap_server='localhost'
+	ldap_port=49152
+	ldap_url="ldap://$ldap_server:$ldap_port"
+	ldap_basedn='dc=example,dc=net'
+	ldap_rootdn='cn=Manager,dc=example,dc=net'
+	ldap_rootpw='secret'
+
+cat >$slapd_conf <<-EOF
+include $ldap_schema_dir/core.schema
+include $ldap_schema_dir/cosine.schema
+include $ldap_schema_dir/nis.schema
+include $ldap_schema_dir/inetorgperson.schema
+pidfile $slapd_pidfile
+logfile $slapd_logfile
+access to *
+        by * read
+        by anonymous auth
+
+database ldif
+directory $ldap_datadir
+suffix "dc=example,dc=net"
+rootdn "$ldap_rootdn"
+rootpw $ldap_rootpw
+EOF
+
+cat >$ldap_conf <<-EOF
+TLS_REQCERT never
+EOF
+
+	if [ -d $ldap_datadir ];then
+		rm -rf $ldap_datadir
+	fi
+	mkdir -p $ldap_datadir
+
+	echo $slapd "-f" $slapd_conf "-h" $ldap_url
+	$slapd -f $slapd_conf -h $ldap_url && sleep 1
+
+	export LDAPURI=$ldap_url
+	export LDAPBINDDN=$ldap_rootdn
+	export LDAPCONF=$ldap_conf
+
+	echo ldapadd -x -w $ldap_rootpw -f $ldap_pwd/ldap.ldif -H $ldap_url
+	ldapadd -x -w $ldap_rootpw -f $ldap_pwd/ldap.ldif
+	ldappasswd -x -w $ldap_rootpw -s secret1 'uid=ldapuser1,dc=example,dc=net'
+	ldapsearch -x -b "dc=example,dc=net"
+
+	local re=0
+	#1 test
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapport=$ldap_port ldapprefix="uid=" ldapsuffix=",dc=example,dc=net"
+EOF
+
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+
+	kill -2 $(cat $slapd_pidfile)
+	return $re
+}
 
 testlist="
 test_show_version
@@ -1379,6 +1466,7 @@ test_auto_database
 test_cancel
 test_cancel_wait
 test_cancel_pool_size
+test_ldap_authentication
 "
 
 if [ $# -gt 0 ]; then
