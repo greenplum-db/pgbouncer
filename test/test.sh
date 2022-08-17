@@ -1331,6 +1331,9 @@ test_cancel_pool_size() {
 }
 # Test ldap authentication
 test_ldap_authentication() {
+	if [ ! -e ../ldap_configured ];then
+		return 77	
+	fi
 	osname=$(uname -s)
 	if [ $osname != "Linux" ];then 
 		return 77
