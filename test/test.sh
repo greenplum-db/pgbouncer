@@ -1400,11 +1400,61 @@ EOF
 	ldapsearch -x -b "dc=example,dc=net"
 
 	local re=0
-	#1 test
+	#1 test "simple bind"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapport=$ldap_port ldapprefix="uid=" ldapsuffix=",dc=example,dc=net"
 EOF
 
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#2 test "search+bind"
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapport=$ldap_port ldapbasedn="$ldap_basedn"
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#3 test "multiple servers"
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapserver="$ldap_server $ldap_server" ldapport=$ldap_port ldapbasedn="$ldap_basedn"
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#4 test "LDAP URLs"
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapurl="$ldap_url/$ldap_basedn?uid?sub"
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#5 test "search filters"
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapsearchfilter="uid=\$username"
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#6 test "search filters in LDAP URLs"
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapurl="$ldap_url/$ldap_basedn??sub?(|(uid=\$username)(mail=\$username))"
+EOF
 	echo 'auth_type = hba' >> test.ini
 	admin "reload" && sleep 1
 	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
