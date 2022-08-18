@@ -556,7 +556,7 @@ static void
 formatsearchfilter(char *filter, int length, const char *pattern, const char *user_name)
 {
 	int cur_len = 0;
-	while (*pattern != '\0')
+	while ((*pattern != '\0') && (cur_len < length))
 	{
 		if (strncmp(pattern, LPH_USERNAME, LPH_USERNAME_LEN) == 0)
 		{
@@ -564,8 +564,7 @@ formatsearchfilter(char *filter, int length, const char *pattern, const char *us
 			pattern += LPH_USERNAME_LEN;
 		}
 		else {
-			if(cur_len < length)
-				filter[cur_len++] = *pattern++;
+			filter[cur_len++] = *pattern++;
 		}
 	}
 	if (cur_len >= length)
