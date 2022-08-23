@@ -1518,15 +1518,13 @@ bool admin_pre_login(PgSocket *client, const char *username)
 	 * auth_type=any does not keep original username around,
 	 * so username based check has to take place here
 	 */
-	if (cf_auth_type == AUTH_ANY) {
-		if (strlist_contains(cf_admin_users, username)) {
-			client->login_user = admin_pool->db->forced_user;
-			client->admin_user = true;
-			return true;
-		} else if (strlist_contains(cf_stats_users, username)) {
-			client->login_user = admin_pool->db->forced_user;
-			return true;
-		}
+	if (strlist_contains(cf_admin_users, username)) {
+		client->login_user = admin_pool->db->forced_user;
+		client->admin_user = true;
+		return true;
+	} else if (strlist_contains(cf_stats_users, username)) {
+		client->login_user = admin_pool->db->forced_user;
+		return true;
 	}
 	return false;
 }
