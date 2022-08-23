@@ -521,24 +521,24 @@ InitializeLDAPConnection(struct ldap_auth_request *request, LDAP **ldap)
 	}
 
 	if ((r = ldap_set_option(*ldap, LDAP_OPT_PROTOCOL_VERSION, &ldapversion)) != LDAP_SUCCESS) {
-		ldap_unbind(*ldap);
 		log_warning("could not set LDAP protocol version: %s", ldap_err2string(r));
+		ldap_unbind(*ldap);
 		return false;
 	}
 
-	ts.tv_sec = 10;
+	ts.tv_sec = 3;
 	ts.tv_usec = 0;
 	if ((r = ldap_set_option(*ldap, LDAP_OPT_NETWORK_TIMEOUT, &ts)) != LDAP_SUCCESS) {
-		ldap_unbind(*ldap);
 		log_warning("could not set LDAP timeout: %s", ldap_err2string(r));
+		ldap_unbind(*ldap);
 		return false;
 	}
 
 	if (request->ldaptls) {
 		if ((r = ldap_start_tls_s(*ldap, NULL, NULL)) != LDAP_SUCCESS) {
-			ldap_unbind(*ldap);
 			log_warning("could not start LDAP TLS session: %s, server: %s, port: %d",
 						ldap_err2string(r), request->ldapserver, request->ldapport);
+			ldap_unbind(*ldap);
 			return false;
 		}
 	}
