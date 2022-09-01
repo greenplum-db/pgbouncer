@@ -1515,8 +1515,7 @@ bool admin_pre_login(PgSocket *client, const char *username)
 	}
 
 	/*
-	 * auth_type=any does not keep original username around,
-	 * so username based check has to take place here
+	 * remove the limitation of auth_type=any to enable admin user login to admin console
 	 */
 	if (strlist_contains(cf_admin_users, username)) {
 		client->login_user = admin_pool->db->forced_user;
