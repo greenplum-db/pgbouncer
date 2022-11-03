@@ -1329,6 +1329,28 @@ test_cancel_pool_size() {
 
 	return 0
 }
+# Test admin user login in different auth_type
+test_admin_user_login() {
+	# auth_type = hba
+	cat >hba.conf<<EOF
+host pgbouncer admin_user 0.0.0.0/0 trust
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	psql -X -d pgbouncer -U admin_user -c "show pools"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+
+	# auth_type = md5
+	echo 'auth_type = md5' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=a psql -X -d pgbouncer -U admin_user -c "show pools"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	return $re
+}
 # Test ldap authentication
 test_ldap_authentication() {
 	if [ ! -e ../ldap_configured ];then
@@ -1519,6 +1541,7 @@ test_auto_database
 test_cancel
 test_cancel_wait
 test_cancel_pool_size
+test_admin_user_login
 test_ldap_authentication
 "
 

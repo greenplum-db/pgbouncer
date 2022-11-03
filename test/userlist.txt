@@ -17,3 +17,4 @@
 "scramuser2" "SCRAM-SHA-256$4096:BUYIT9YAsWf036OHLPfv2Q==$zuk7pzdEc5tvftsRIuwlStNxVc+wIE/xfDs7ahsKN0k=:Lov6mndE0DmlgtY60e1LyDsLctQyoH+Bvkm9K9njSa8="
 
 "scramuser3" "baz"
+"admin_user" "a"
