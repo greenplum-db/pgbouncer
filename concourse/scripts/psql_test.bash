@@ -6,21 +6,30 @@ export HOME_DIR=$PWD
 CWDIR=$HOME_DIR/gpdb_src/concourse/scripts/
 source "${CWDIR}/common.bash"
 
+function init_os() {
+    case "$TARGET_OS" in
+        centos*|rhel*)
+            export TEST_OS=centos
+            ;;
+        photon*)
+            export TEST_OS=photon
+            ;;
+        ubuntu*)
+            export TEST_OS=ubuntu
+            ;;
+        *) echo "Unknown OS: $TARGET_OS"; exit 1 ;;
+    esac
+}
+
 function setup_gpdb_cluster() {
-    export TEST_OS=centos
-    #export PGPORT=15432
+    init_os
     export CONFIGURE_FLAGS=" --with-openssl --with-ldap"
     if [ ! -f "bin_gpdb/bin_gpdb.tar.gz" ];then
         mv bin_gpdb/*.tar.gz bin_gpdb/bin_gpdb.tar.gz
     fi
 
-    if [ "$(type -t install_and_configure_gpdb)" = "function" ] ; then
-        time install_and_configure_gpdb
-    else
-        # gpdb5 doesn't have function install_add_configure_gpdb
-        time configure
-        time install_gpdb
-    fi
+    time install_and_configure_gpdb
+
     time ${HOME_DIR}/gpdb_src/concourse/scripts/setup_gpadmin_user.bash "$TEST_OS"
     export WITH_MIRRORS=false
     time make_cluster
@@ -40,7 +49,6 @@ function install_openldap() {
 }
 
 function _main(){
-    #yum install -y sudo
     install_openldap
     setup_gpdb_cluster
     chown -R gpadmin:gpadmin pgbouncer_src
