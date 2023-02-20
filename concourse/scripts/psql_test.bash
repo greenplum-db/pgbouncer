@@ -42,7 +42,11 @@ function install_openldap() {
     if [ -f /etc/redhat-release ];then
           os="centos"
     fi
-    if [ x$os == "xcentos" ];then
+    if [ $TARGET_OS = "rocky8" ];then
+        dnf update -y
+        wget -q https://repo.symas.com/configs/SOFL/rhel8/sofl.repo -O /etc/yum.repos.d/sofl.repo
+        dnf install symas-openldap-clients symas-openldap-servers -y
+    elif [ x$os == "xcentos" ];then
         yum install -y openldap-servers openldap-clients
     else
         echo "Platform not support"
