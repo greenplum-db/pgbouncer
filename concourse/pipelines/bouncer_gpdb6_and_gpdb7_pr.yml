@@ -45,53 +45,27 @@ resources:
       json_key: ((dataflow/concourse-gcs-resources-service-account-key))
       regexp: server/published/gpdb6/server-rc-(.*)-rhel7_x86_64.tar.gz
 
-  - name: gpdb7-centos7-build
-    type: registry-image
+  - name: gpdb6-rocky8-build
     source:
-      repository: gcr.io/data-gpdb-public-images/gpdb7-centos7-build
-
-  - name: gpdb7-centos7-test
-    type: registry-image
-    source:
-      repository: gcr.io/data-gpdb-public-images/gpdb7-centos7-test
+      repository: gcr.io/data-gpdb-public-images/gpdb6-rocky8-build
       tag: latest
+    type: registry-image
 
-  - name: gpdb7_src
-    type: git
+  - name: gpdb6-rocky8-test
     source:
-      branch: main
-      uri: https://github.com/greenplum-db/gpdb.git
-      ignore_paths:
-        - gpdb-doc/*
-        - README*
+      repository: gcr.io/data-gpdb-public-images/gpdb6-rocky8-test
+      tag: latest
+    type: registry-image
 
-  - name: bin_gpdb7_centos7
+  - name: bin_gpdb_rocky8
+    source:
+      bucket: pivotal-gpdb-concourse-resources-intermediates-prod
+      json_key: ((concourse-gcs-resources-service-account-key))
+      versioned_file: 6X_STABLE/bin_gpdb_rocky8/bin_gpdb.tar.gz
     type: gcs
-    source:
-      bucket: ((dataflow/gpdb6-bin-bucket-name))
-      json_key: ((dataflow/concourse-gcs-resources-service-account-key))
-      regexp: server/published/main/server-rc-(.*)-rhel7_x86_64.tar.gz
 
-  - name: gpdb7-ubuntu18.04-build
-    type: registry-image
-    source:
-      repository: gcr.io/data-gpdb-public-images/gpdb7-ubuntu18.04-build
-      tag: latest
-  
-  - name: gpdb7-ubuntu18.04-test
-    type: registry-image
-    source:
-      repository: gcr.io/data-gpdb-public-images/gpdb7-ubuntu18.04-test
-      tag: latest
-
-  - name: bin_gpdb7_ubuntu18.04
-    type: gcs
-    source:
-      bucket: ((dataflow/gpdb6-bin-bucket-name))
-      json_key: ((dataflow/concourse-gcs-resources-service-account-key))
-      regexp: server/published/main/server-rc-(.*)-ubuntu18.04_x86_64.tar.gz
 jobs:
-  - name: gpdb6_pgbouncer_test
+  - name: test_pgbouncer_gpdb6_centos7
     plan:
       - in_parallel:
           - get: pgbouncer_pr
@@ -142,17 +116,18 @@ jobs:
           TARGET_OS: centos7
         on_failure: *pr_failure
         timeout: 30m
-  - name: test_pgbouncer_gpdb7-centos7
+
+  - name: test_pgbouncer_gpdb6_rocky8
     plan:
       - in_parallel:
           - get: pgbouncer_pr
             trigger: true
             version: every
-          - get: gpdb7-centos7-build
-          - get: gpdb7-centos7-test
-          - get: gpdb7_src
+          - get: gpdb6-rocky8-build
+          - get: gpdb6-rocky8-test
+          - get: gpdb6_src
           - get: bin_gpdb
-            resource: bin_gpdb7_centos7
+            resource: bin_gpdb_rocky8
       - put: pgbouncer_pr
         params:
           path: pgbouncer_pr
@@ -160,7 +135,7 @@ jobs:
       - task: build_pgbouncer
         input_mapping:
           pgbouncer_src: pgbouncer_pr
-          gpdb_src: gpdb7_src
+          gpdb_src: gpdb6_src
         config:
           platform: linux
           inputs:
@@ -170,7 +145,7 @@ jobs:
           - name: pgbouncer_compiled
           run:
             path: pgbouncer_src/concourse/scripts/build.bash
-        image: gpdb7-centos7-build
+        image: gpdb6-rocky8-build
         on_failure: &pr_failure
           put: pgbouncer_pr
           params:
@@ -179,8 +154,8 @@ jobs:
         timeout: 30m
       - task: psql_test
         input_mapping:
-          gpdb_src: gpdb7_src
           pgbouncer_src: pgbouncer_compiled
+          gpdb_src: gpdb6_src
         config:
           platform: linux
           inputs:
@@ -189,61 +164,9 @@ jobs:
             - name: bin_gpdb
           run:
             path: pgbouncer_src/concourse/scripts/psql_test.bash
-        image: gpdb7-centos7-test
+        image: gpdb6-rocky8-test
         params:
-          TARGET_OS: centos7
-        on_failure: *pr_failure
-        timeout: 30m
-  - name: test_pgbouncer_gpdb7-ubuntu18.04
-    plan:
-      - in_parallel:
-          - get: pgbouncer_pr
-            trigger: true
-            version: every
-          - get: gpdb7-ubuntu18.04-build
-          - get: gpdb7-ubuntu18.04-test
-          - get: gpdb7_src
-          - get: bin_gpdb
-            resource: bin_gpdb7_ubuntu18.04
-      - put: pgbouncer_pr
-        params:
-          path: pgbouncer_pr
-          status: pending
-      - task: build_pgbouncer
-        input_mapping:
-          pgbouncer_src: pgbouncer_pr
-          gpdb_src: gpdb7_src
-        config:
-          platform: linux
-          inputs:
-          - name: pgbouncer_src
-          - name: gpdb_src
-          outputs:
-          - name: pgbouncer_compiled
-          run:
-            path: pgbouncer_src/concourse/scripts/build.bash
-        image: gpdb7-ubuntu18.04-build
-        on_failure: &pr_failure
-          put: pgbouncer_pr
-          params:
-            path: pgbouncer_pr
-            status: failure
-        timeout: 30m
-      - task: psql_test
-        input_mapping:
-          gpdb_src: gpdb7_src
-          pgbouncer_src: pgbouncer_compiled
-        config:
-          platform: linux
-          inputs:
-            - name: pgbouncer_src
-            - name: gpdb_src
-            - name: bin_gpdb
-          run:
-            path: pgbouncer_src/concourse/scripts/psql_test.bash
-        image: gpdb7-ubuntu18.04-test
-        params:
-          TARGET_OS: ubuntu18
+          TARGET_OS: rocky8
         on_failure: *pr_failure
         timeout: 30m
 
@@ -253,9 +176,8 @@ jobs:
           - get: pgbouncer_pr
             trigger: true
             passed:
-              - gpdb6_pgbouncer_test
-              - test_pgbouncer_gpdb7-centos7
-              - test_pgbouncer_gpdb7-ubuntu18.04
+              - test_pgbouncer_gpdb6_centos7
+              - test_pgbouncer_gpdb6_rocky8
       - put: report_pr_success
         resource: pgbouncer_pr
         params:

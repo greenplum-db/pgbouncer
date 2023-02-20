@@ -17,7 +17,8 @@ function init_os() {
         ubuntu*)
             export TEST_OS=ubuntu
             ;;
-        *) echo "Unknown OS: $TARGET_OS"; exit 1 ;;
+        *) export TEST_OS=$TARGET_OS
+            ;;
     esac
 }
 
