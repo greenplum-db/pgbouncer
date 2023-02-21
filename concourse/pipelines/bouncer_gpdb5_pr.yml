@@ -17,7 +17,7 @@ resources:
 - name: pgbouncer_pr
   type: pull_request
   source:
-    access_token: {{git-access-token}}
+    access_token: ((gpdb-git-access-token))
     base_branch: "pgbouncer_1_8_1"
     repository: greenplum-db/pgbouncer
     ignore_paths:
@@ -42,11 +42,11 @@ resources:
 - name: bin_gpdb5_centos7
   type: s3
   source:
-    access_key_id: {{bucket-access-key-id}}
-    bucket: {{gpdb5-bucket-name}}
-    region_name: {{aws-region}}
-    secret_access_key: {{bucket-secret-access-key}}
-    versioned_file: {{bin_gpdb5_centos7_versioned_file}}
+    access_key_id: ((dataflow/bucket-access-key-id))
+    bucket: ((dataflow/gpdb5-bucket-name))
+    region_name: ((dataflow/aws-region))
+    secret_access_key: ((dataflow/bucket-secret-access-key))
+    versioned_file: ((dataflow/bin_gpdb5_centos7_versioned_file))
 
 jobs:
 - name: gpdb5_pgbouncer_test
