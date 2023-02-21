@@ -689,8 +689,7 @@ Default: ``all``
 server_tls_ciphers
 ------------------
 
-Default: ``fast``
-
+Default: ``HIGH:MEDIUM:+3DES:!aNULL``
 
 Dangerous timeouts
 ==================

@@ -14,6 +14,8 @@
 /test/log
 /test/test.log
 /test/test.pid
+/test/ssl/tmp
+/test/ssl/TestCA1
 
 *.html
 *.xml

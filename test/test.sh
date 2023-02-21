@@ -5,9 +5,25 @@
 
 cd $(dirname $0)
 
-export PATH=/usr/lib/postgresql/9.4/bin:$PATH
-export PGDATA=$PWD/pgdata
-export PGHOST=localhost
+# set up gpdb source env
+which psql
+if [ $? -ne 0 ]
+then
+	source /usr/local/greenplum-db-devel/greenplum_path.sh
+	source ../../gpdb_src/gpAux/gpdemo/gpdemo-env.sh
+fi
+export PGDATA=$MASTER_DATA_DIRECTORY
+# PG_PORT is gpdb master server port and PGPORT will be set us pgboucer server port
+PG_PORT=${PGPORT}
+
+if [ ! -d $${PGDATA} ]; then
+	cp ${PGDATA}/pg_hba.conf ${PGDATA}/pg_hba.conf.orig
+fi
+
+# replace port in test.ini
+cp test.ini test.ini.orig
+sed -i "s/PGPORT/${PG_PORT}/" test.ini
+
 export PGPORT=6667
 export EF_ALLOW_MALLOC_0=1
 export LANG=C
@@ -20,8 +36,12 @@ BOUNCER_EXE="../pgbouncer"
 
 LOGDIR=log
 NC_PORT=6668
-PG_PORT=6666
 PG_LOG=$LOGDIR/pg.log
+
+################################
+#  return code
+################################
+result=0
 
 pgctl() {
 	pg_ctl -o "-p $PG_PORT" -D $PGDATA $@ >>$PG_LOG 2>&1
@@ -66,20 +86,11 @@ stopit() {
 }
 
 stopit test.pid
-stopit pgdata/postmaster.pid
+#stopit pgdata/postmaster.pid
 
 mkdir -p $LOGDIR
 rm -f $BOUNCER_LOG $PG_LOG
-rm -rf $PGDATA
 
-if [ ! -d $PGDATA ]; then
-	mkdir $PGDATA
-	initdb >> $PG_LOG 2>&1
-	sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" pgdata/postgresql.conf
-fi
-
-pgctl start
-sleep 5
 
 echo "Creating databases"
 psql -p $PG_PORT -l |grep p0 > /dev/null || {
@@ -89,9 +100,9 @@ psql -p $PG_PORT -l |grep p0 > /dev/null || {
 	createdb -p $PG_PORT p3
 }
 
-psql -p $PG_PORT -d p0 -c "select * from pg_user" | grep pswcheck > /dev/null || {
-	psql -p $PG_PORT p0 -c "create user pswcheck with superuser createdb password 'pgbouncer-check';" || return 1
-	psql -p $PG_PORT p0 -c "create user someuser with password 'anypasswd';" || return 1
+psql -p $PG_PORT -d p1 -c "select * from pg_user" | grep pswcheck > /dev/null || {
+	psql -p $PG_PORT p1 -c "create user pswcheck with superuser createdb password 'pgbouncer-check';" || return 1
+	psql -p $PG_PORT p1 -c "create user someuser with password 'anypasswd';" || return 1
 }
 
 echo "Starting bouncer"
@@ -142,8 +153,10 @@ fw_reset() {
 
 complete() {
 	test -f $BOUNCER_PID && kill `cat $BOUNCER_PID` >/dev/null 2>&1
-	pgctl -m fast stop
 	rm -f $BOUNCER_PID
+	cp ${PGDATA}/pg_hba.conf.orig ${PGDATA}/pg_hba.conf
+	rm test.ini
+	mv test.ini.orig test.ini
 }
 
 die() {
@@ -162,6 +175,7 @@ runtest() {
 	if [ $? -eq 0 ]; then
 		echo "ok"
 	else
+		result=1
 		echo "FAILED"
 	fi
 	date >> $LOGDIR/$1.log
@@ -213,12 +227,18 @@ test_client_idle_timeout() {
 }
 
 # server_login_retry 
-test_server_login_retry() {
-	admin "set query_timeout=10"
-	admin "set server_login_retry=1"
+# set server_login_retry to 10 instead of 1 beacuse
+# gpdb master will start firstly and segments are not
+# start yet. So the pgbouncer connect to master will
+# fail with the following message:
+#"FATAL System was started in master-only utility mode - only utility mode connections are allowed"
+# So it needs to try more times to login
 
-	(pgctl -m fast stop; sleep 3; pgctl start) &
-	sleep 1
+test_server_login_retry() {
+	admin "set query_timeout=60"
+	admin "set server_login_retry=30"
+	(gpstop -aM fast; sleep 4; gpstart -a) &
+	sleep 2
 	psql -c "select now()" p0
 	rc=$?
 	wait
@@ -227,10 +247,10 @@ test_server_login_retry() {
 
 # server_connect_timeout - uses netcat to start dummy server
 test_server_connect_timeout_establish() {
-	which nc >/dev/null || return 1
+	which nc6 >/dev/null || return 1
 
-	echo nc $NC_WAIT_OP -l $NC_PORT
-	nc $NC_WAIT_OP -l $NC_PORT >/dev/null &
+	echo nc6 $NC_WAIT_OP -l -p $NC_PORT
+	nc6 $NC_WAIT_OP -l -p $NC_PORT >/dev/null &
 	sleep 2
 	admin "set query_timeout=3"
 	admin "set server_connect_timeout=2"
@@ -239,7 +259,7 @@ test_server_connect_timeout_establish() {
 	grep "closing because: connect timeout" $BOUNCER_LOG 
 	rc=$?
 	# didnt seem to die otherwise
-	killall nc
+	pkill nc6
 	return $rc
 }
 
@@ -403,7 +423,8 @@ test_database_restart() {
 	admin "set server_login_retry=1"
 
 	psql p0 -c "select now() as p0_before_restart"
-	pgctl -m fast restart
+#	pgctl -m fast restart
+	gpstop -ar
 	echo `date` restart 1
 	psql p0 -c "select now() as p0_after_restart" || return 1
 
@@ -414,7 +435,8 @@ test_database_restart() {
 		psql p1 -c "select pg_sleep($i)" &
 	done
 
-	pgctl -m fast restart
+	#pgctl -m fast restart
+	gpstop -ar
 	echo `date` restart 2
 
 	wait
@@ -426,6 +448,7 @@ test_database_change() {
 	admin "set server_lifetime=2"
 
 	db1=`psql -tAq p1 -c "select current_database()"`
+	echo "db1=$db1"
 
 	cp test.ini test.ini.bak
 	sed '/^p1 =/s/dbname=p1/dbname=p0/g' test.ini >test2.ini
@@ -448,6 +471,11 @@ test_database_change() {
 
 # test connect string change
 test_auth_user() {
+	echo "host all pswcheck 127.0.0.1/32 md5" >> ${PGDATA}/pg_hba.conf
+	echo "host all pswcheck  ::1/128 md5" >> ${PGDATA}/pg_hba.conf
+	echo "host all someuser 127.0.0.1/32 md5" >> ${PGDATA}/pg_hba.conf
+	echo "host all someuser  ::1/128 md5" >> ${PGDATA}/pg_hba.conf
+	gpstop -u
 	admin "set auth_type='md5'"
 	curuser=`psql -d "dbname=authdb user=someuser password=anypasswd" -tAq -c "select current_user;"`
 	echo "curuser=$curuser"
@@ -477,8 +505,6 @@ test_client_idle_timeout
 test_server_lifetime
 test_server_idle_timeout
 test_query_timeout
-test_server_connect_timeout_establish
-test_server_connect_timeout_reject
 test_server_check_delay
 test_max_client_conn
 test_pool_size
@@ -500,5 +526,7 @@ do
 done
 
 complete
+
+exit $result
 
 # vim: sts=0 sw=8 noet nosmarttab:

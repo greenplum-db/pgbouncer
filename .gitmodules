@@ -1,3 +1,4 @@
 [submodule "lib"]
 	path = lib
-	url = https://github.com/libusual/libusual.git
+	url = https://github.com/greenplum-db/libusual.git
+	branch = pgbouncer_1_8_1
