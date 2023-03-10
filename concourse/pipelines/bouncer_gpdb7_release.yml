@@ -38,11 +38,11 @@ resources:
       tag: latest
     type: registry-image
 
-  - name: bin_gpdb7_rocky8
+  - name: bin_gpdb_rocky8_rc
     source:
-      bucket: pivotal-gpdb-concourse-resources-intermediates-prod
+      bucket: pivotal-gpdb-concourse-resources-prod
       json_key: ((concourse-gcs-resources-service-account-key))
-      versioned_file: gpdb_main/bin_gpdb_rocky8/bin_gpdb.tar.gz
+      regexp: server/published/main/server-rc-(.*)-rocky8_x86_64.tar.gz
     type: gcs
 
   - name: intermediates_pkg_gpdb7_rocky8
@@ -50,14 +50,14 @@ resources:
     source:
       bucket: ((dataflow/gpdb7-pgbouncer-bucket-name))
       json_key: ((dataflow/concourse-gcs-resources-service-account-key))
-      regexp: pgbouncer/published/gpdb7/pgbouncer-(.*)-rocky8_x86_64.tar.gz
+      regexp: pgbouncer/published/gpdb7/pgbouncer-(.*)-el8_x86_64.tar.gz
 
   - name: component_pkg_gpdb7_rocky8
     type: gcs
     source:
       bucket: ((dataflow/gpdb7-pgbouncer-bucket-name))
       json_key: ((dataflow/concourse-gcs-resources-service-account-key))
-      regexp: pgbouncer/released/gpdb7/pgbouncer-(.*)-rocky8_x86_64.tar.gz
+      regexp: pgbouncer/released/gpdb7/pgbouncer-(.*)-el8_x86_64.tar.gz
 
 jobs:
   - name: rocky8_build_and_test
@@ -70,7 +70,7 @@ jobs:
           - get: gpdb7-rocky8-build
           - get: gpdb7_src
           - get: bin_gpdb
-            resource: bin_gpdb7_rocky8
+            resource: bin_gpdb_rocky8_rc
       - task: build_pgbouncer
         input_mapping:
           pgbouncer_src: pgbouncer_src
