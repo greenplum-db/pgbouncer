@@ -19,6 +19,7 @@ resources:
       access_token: ((gpdb-git-access-token))
       base_branch: "main"
       repository: greenplum-db/pgbouncer
+      disable_forks: true
       ignore_paths:
         - doc/*
         - README*
