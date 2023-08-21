@@ -122,6 +122,7 @@ if ! grep -q "^\"${USER:=$(id -un)}\"" userlist.txt; then
 	cp userlist.txt userlist.txt.bak
 	echo "\"${USER}\" \"01234\"" >> userlist.txt
 	echo "\"longpass\" \"${long_password}\"" >> userlist.txt
+	echo "\"ldapuser1\" \"123456\"" >> userlist.txt
 fi
 
 if test -n "$USE_SUDO"; then
@@ -1473,6 +1474,17 @@ EOF
 	echo 'auth_type = hba' >> test.ini
 	admin "reload" && sleep 1
 	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	# switch auth type from ldap to md5
+	touch userlist.txt # refresh timestamp to change the password of user ldapuser1
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 md5
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=123456 psql -X -d p0 -U ldapuser1 -c "select 1"
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
