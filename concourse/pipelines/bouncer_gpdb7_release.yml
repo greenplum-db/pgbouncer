@@ -42,7 +42,7 @@ resources:
     source:
       bucket: pivotal-gpdb-concourse-resources-prod
       json_key: ((concourse-gcs-resources-service-account-key))
-      regexp: server/published/main/server-rc-(.*)-rocky8_x86_64.tar.gz
+      regexp: server/published/main/server-rc-(.*)-el8_x86_64.debug.tar.gz
     type: gcs
 
   - name: intermediates_pkg_gpdb7_rocky8
