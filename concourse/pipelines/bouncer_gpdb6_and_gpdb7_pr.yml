@@ -104,7 +104,7 @@ resources:
     source:
       bucket: pivotal-gpdb-concourse-resources-intermediates-prod
       json_key: ((concourse-gcs-resources-service-account-key))
-      versioned_file: gpdb_main/bin_gpdb_rocky8/bin_gpdb.tar.gz
+      versioned_file: gpdb_main/bin_gpdb/bin_gpdb.tar.gz
     type: gcs
 
 jobs:
