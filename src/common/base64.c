@@ -118,11 +118,7 @@ pg_b64_decode(const char *src, int len, char *dst)
 			/* end sequence */
 			if (!end)
 			{
-				if (pos == 2)
-					end = 1;
-				else if (pos == 3)
-					end = 2;
-				else
+				if (pos < 2)
 				{
 					/*
 					 * Unexpected "=" character found while decoding base64
@@ -130,14 +126,14 @@ pg_b64_decode(const char *src, int len, char *dst)
 					 */
 					return -1;
 				}
+				else
+					end = pos - 1;
 			}
 			b = 0;
 		}
 		else
 		{
-			b = -1;
-			if (c > 0 && c < 127)
-				b = b64lookup[(unsigned char) c];
+			b = (c > 0 && c < 127) ? b64lookup[(unsigned char)c] : -1;
 			if (b < 0)
 			{
 				/* invalid symbol found */
@@ -149,26 +145,19 @@ pg_b64_decode(const char *src, int len, char *dst)
 		pos++;
 		if (pos == 4)
 		{
-			*p++ = (buf >> 16) & 255;
-			if (end == 0 || end > 1)
-				*p++ = (buf >> 8) & 255;
-			if (end == 0 || end > 2)
-				*p++ = buf & 255;
+            *p++ = (buf >> 16) & 255;
+            if (end != 1)
+                *p++ = (buf >> 8) & 255;
 			buf = 0;
 			pos = 0;
 		}
 	}
 
-	if (pos != 0)
-	{
-		/*
-		 * base64 end sequence is invalid.  Input data is missing padding, is
-		 * truncated or is otherwise corrupted.
-		 */
-		return -1;
-	}
-
-	return p - dst;
+	/*
+	* if pos != 0 then base64 end sequence is invalid.  Input data is missing padding,
+	* is truncated or is otherwise corrupted.
+	*/
+	return pos == 0 ? p - dst : -1;
 }
 
 /*
