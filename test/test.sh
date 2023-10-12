@@ -10,7 +10,7 @@ cd $(dirname $0)
 which psql
 if [ $? -ne 0 ]
 then
-	source /usr/local/greenplum-db-devel/greenplum_path.sh
+	source /usr/local/gpdb/greenplum_path.sh
 	source ../../gpdb_src/gpAux/gpdemo/gpdemo-env.sh
 fi
 export PGDATA=$MASTER_DATA_DIRECTORY
@@ -1379,6 +1379,7 @@ test_ldap_authentication() {
 	slapd_pidfile="${ldap_pwd}/slapd.pid"
 	slapd_logfile="${ldap_pwd}/slapd.log"
 	ldap_conf="${ldap_pwd}/ldap.conf"
+	ldap_keyfile="${ldap_pwd}/ldap_key"
 	ldap_server='localhost'
 	ldap_port=49152
 	ldap_url="ldap://$ldap_server:$ldap_port"
@@ -1447,7 +1448,19 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#3 test "multiple servers"
+	#3 test "LDAP with encrypted password"
+	openssl rand -base64 256 | tr -d '\n' >$ldap_keyfile
+	bindpasswd=$(echo -n "123456" | openssl enc -aes-256-cbc -base64 -md sha256 -pass file:${$ldap_keyfile})
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapbindpasswd="$bindpasswd" ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapsearchfilter="uid=\$username"
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#4 test "multiple servers"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver="$ldap_server $ldap_server" ldapport=$ldap_port ldapbasedn="$ldap_basedn"
 EOF
@@ -1457,7 +1470,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#4 test "LDAP URLs"
+	#5 test "LDAP URLs"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapurl="$ldap_url/$ldap_basedn?uid?sub"
 EOF
@@ -1467,7 +1480,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#5 test "search filters"
+	#6 test "search filters"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapsearchfilter="uid=\$username"
 EOF
@@ -1488,7 +1501,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#6 test "search filters in LDAP URLs"
+	#8 test "search filters in LDAP URLs"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapurl="$ldap_url/$ldap_basedn??sub?(|(uid=\$username)(mail=\$username))"
 EOF

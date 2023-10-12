@@ -25,6 +25,7 @@
 #include "scram.h"
 
 #include <usual/pgutil.h>
+#include <usual/fileutil.h>
 
 static const char *hdr2hex(const struct MBuf *data, char *buf, unsigned buflen)
 {
@@ -252,6 +253,9 @@ static bool finish_set_pool(PgSocket *client, bool takeover)
 				snprintf(client->ldap_parameters, MAX_LDAP_CONFIG, "%s", ldap_content);
 			}
 		}
+
+		if (cf_auth_key_file != NULL)
+			client->ldap_key = load_file(cf_auth_key_file, NULL);
 #endif
 	}
 

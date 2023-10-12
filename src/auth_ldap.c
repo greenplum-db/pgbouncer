@@ -21,6 +21,7 @@
  */
 
 #include "bouncer.h"
+#include "util.h"
 
 #ifdef HAVE_LDAP
 
@@ -610,6 +611,8 @@ checkldapauth(struct ldap_auth_request *request)
 		char filter[LDAP_LONG_LENGTH];
 		LDAPMessage *search_message;
 		LDAPMessage *entry;
+		char password[1024];
+		char *ldappassword = request->ldapbindpasswd;
 		char *attributes[2] = {LDAP_NO_ATTRS, NULL};
 		char *dn;
 		char *c;
@@ -636,9 +639,14 @@ checkldapauth(struct ldap_auth_request *request)
 		 * Bind with a pre-defined username/password (if available) for
 		 * searching. If none is specified, this turns into an anonymous bind.
 		 */
+		if (request->client->ldap_key != NULL) {
+			int deresult = decrypt_ldap_password(request->client->ldap_key, request->ldapbindpasswd, password);
+			ldappassword = (deresult == 0) ? password : NULL;
+		}
+
 		r = ldap_simple_bind_s(ldap,
 							   request->ldapbinddn ? request->ldapbinddn : "",
-							   request->ldapbindpasswd ? request->ldapbindpasswd : "");
+							   ldappassword ? ldappassword : "");
 		if (r != LDAP_SUCCESS) {
 			log_warning("could not perform initial LDAP bind for ldapbinddn \"%s\" on server \"%s\": %s",
 						request->ldapbinddn ? request->ldapbinddn : "",

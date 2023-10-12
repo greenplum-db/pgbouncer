@@ -21,9 +21,12 @@
  */
 
 #include "bouncer.h"
+#include "common/base64.h"
 
 #include <usual/crypto/md5.h>
 #include <usual/crypto/csrandom.h>
+
+#include <openssl/evp.h>
 
 int log_socket_prefix(enum LogLevel lev, void *ctx, char *dst, unsigned int dstlen)
 {
@@ -466,4 +469,89 @@ const char *pga_details(const PgAddr *a, char *dst, int dstlen)
 		snprintf(dst, dstlen, "%s:%d", buf, pga_port(a));
 	}
 	return dst;
+}
+
+int generate_key_iv(const char *password, int password_len, const unsigned char *salt, unsigned char *key, unsigned char *iv)
+{
+    const EVP_CIPHER *cipher;
+    const EVP_MD *dgst = NULL;
+    int i;
+ 
+    OpenSSL_add_all_algorithms();
+ 
+    cipher = EVP_get_cipherbyname("aes-256-cbc");
+    if(!cipher) { fprintf(stderr, "no such cipher\n"); return 1; }
+ 
+    dgst = EVP_get_digestbyname("sha256");
+    if(!dgst) { fprintf(stderr, "no such digest\n"); return 1; }
+ 
+    if(!EVP_BytesToKey(cipher, dgst, salt,
+        (const unsigned char *)password,
+        password_len, 1, key, iv))
+    {
+        fprintf(stderr, "EVP_BytesToKey failed\n");
+        return 1;
+    }
+ 
+    printf("Key: "); for(i=0; i<EVP_CIPHER_key_length(cipher); ++i) { printf("%02X", key[i]); } printf("\n");
+    printf("IV: "); for(i=0; i<EVP_CIPHER_iv_length(cipher); ++i) { printf("%02X", iv[i]); } printf("\n");
+ 
+    return 0;
+}
+
+int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char *key, unsigned char *iv)
+{
+    int declen = 0;
+    int outlen = 0;
+    EVP_CIPHER_CTX *ctx;
+    ctx = EVP_CIPHER_CTX_new();
+    EVP_CipherInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv, 0);
+ 
+    EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, enc_length);
+    declen = outlen;
+    EVP_CipherFinal(ctx, (unsigned char *)out+outlen, &outlen);
+    declen += outlen;
+    EVP_CIPHER_CTX_free(ctx);
+    return declen;
+}
+
+int decrypt_ldap_password(const char* key_txt, const char* encrypt_txt, char* password)
+{
+    unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
+    unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
+
+    char debase64_encrypt[1024] = {0};
+    unsigned char salt[8] = {0};
+    char salt_flag = 0;
+	
+    int debase64_length = 0;
+    debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt);
+	if (debase64_length < 0)
+		return -1;
+
+    /* Check if Salted__ is used */
+    if (strncmp(debase64_encrypt, "Salted__", 8) == 0)
+    {
+        salt_flag = 1;
+        memcpy(salt, debase64_encrypt + 8, 8);
+    }
+
+	/* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
+    if (salt_flag)
+    {
+        if (generate_key_iv(key_txt, strlen(key_txt), salt, key, iv) != 0)
+            return -1;
+    }
+    else
+    {
+        if (generate_key_iv(key_txt, strlen(key_txt), NULL, key, iv) != 0)
+            return -1;
+    }
+
+    if (salt_flag)
+        decrypt_aes_256_cbc(debase64_encrypt + 16, debase64_length - 16, password, key, iv);
+    else
+        decrypt_aes_256_cbc(debase64_encrypt, debase64_length, password, key, iv);
+
+    return 0;
 }

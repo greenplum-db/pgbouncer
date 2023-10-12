@@ -954,6 +954,13 @@ void disconnect_client(PgSocket *client, bool notify, const char *reason, ...)
 		client->login_user = NULL;
 	}
 
+#ifdef HAVE_LDAP
+	if (client->ldap_key != NULL) {
+		free(client->ldap_key);
+		client->ldap_key = NULL;
+	}
+#endif
+
 	change_client_state(client, CL_JUSTFREE);
 	if (!sbuf_close(&client->sbuf))
 		log_noise("sbuf_close failed, retry later");

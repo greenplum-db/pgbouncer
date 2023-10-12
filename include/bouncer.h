@@ -156,6 +156,7 @@ extern int cf_sbuf_len;
 #ifdef HAVE_LDAP
 /* Hope this length is long enough for ldap config line */
 #define MAX_LDAP_CONFIG 1024
+#define MAX_LDAP_KEY 1024
 #endif
 /*
  * AUTH_* symbols are used for both protocol handling and
@@ -457,6 +458,7 @@ struct PgSocket {
 
 #ifdef HAVE_LDAP
 	char ldap_parameters[MAX_LDAP_CONFIG];
+	char *ldap_key;
 #endif
 	VarCache vars;		/* state of interesting server parameters */
 
@@ -523,6 +525,7 @@ extern char *cf_resolv_conf;
 
 extern int cf_auth_type;
 extern char *cf_auth_file;
+extern char *cf_auth_key_file;
 extern char *cf_auth_query;
 extern char *cf_auth_user;
 extern char *cf_auth_hba_file;
