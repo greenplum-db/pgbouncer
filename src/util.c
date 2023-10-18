@@ -471,32 +471,20 @@ const char *pga_details(const PgAddr *a, char *dst, int dstlen)
 	return dst;
 }
 
+/* Can be expanded with cipher and digest names with the check for the presence of such types */
 int generate_key_iv(const char *password, int password_len, const unsigned char *salt, unsigned char *key, unsigned char *iv)
 {
+	int key_length = 0;
     const EVP_CIPHER *cipher;
     const EVP_MD *dgst = NULL;
-    int i;
  
     OpenSSL_add_all_algorithms();
  
     cipher = EVP_get_cipherbyname("aes-256-cbc");
-    if(!cipher) { fprintf(stderr, "no such cipher\n"); return 1; }
- 
     dgst = EVP_get_digestbyname("sha256");
-    if(!dgst) { fprintf(stderr, "no such digest\n"); return 1; }
  
-    if(!EVP_BytesToKey(cipher, dgst, salt,
-        (const unsigned char *)password,
-        password_len, 1, key, iv))
-    {
-        fprintf(stderr, "EVP_BytesToKey failed\n");
-        return 1;
-    }
- 
-    printf("Key: "); for(i=0; i<EVP_CIPHER_key_length(cipher); ++i) { printf("%02X", key[i]); } printf("\n");
-    printf("IV: "); for(i=0; i<EVP_CIPHER_iv_length(cipher); ++i) { printf("%02X", iv[i]); } printf("\n");
- 
-    return 0;
+	key_length = EVP_BytesToKey(cipher, dgst, salt, (const unsigned char *)password, password_len, 1, key, iv);
+	return key_length;
 }
 
 int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char *key, unsigned char *iv)
@@ -509,7 +497,7 @@ int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char
  
     EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, enc_length);
     declen = outlen;
-    EVP_CipherFinal(ctx, (unsigned char *)out+outlen, &outlen);
+    EVP_CipherFinal(ctx, (unsigned char *)out + outlen, &outlen);
     declen += outlen;
     EVP_CIPHER_CTX_free(ctx);
     return declen;
@@ -539,12 +527,12 @@ int decrypt_ldap_password(const char* key_txt, const char* encrypt_txt, char* pa
 	/* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
     if (salt_flag)
     {
-        if (generate_key_iv(key_txt, strlen(key_txt), salt, key, iv) != 0)
+        if (generate_key_iv(key_txt, strlen(key_txt), salt, key, iv) == 0)
             return -1;
     }
     else
     {
-        if (generate_key_iv(key_txt, strlen(key_txt), NULL, key, iv) != 0)
+        if (generate_key_iv(key_txt, strlen(key_txt), NULL, key, iv) == 0)
             return -1;
     }
 

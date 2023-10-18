@@ -156,6 +156,7 @@ extern int cf_sbuf_len;
 #ifdef HAVE_LDAP
 /* Hope this length is long enough for ldap config line */
 #define MAX_LDAP_CONFIG 1024
+/* Depends on MAX_PASSWORD and encryption algorithm */
 #define MAX_LDAP_KEY 1024
 #endif
 /*

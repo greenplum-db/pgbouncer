@@ -25,8 +25,9 @@
 
 #ifdef HAVE_LDAP
 
-#include <pthread.h>
 #include <ldap.h>
+#include <pthread.h>
+#include <usual/fileutil.h>
 
 /* The request is waiting in the queue or being authenticated */
 #define LDAP_STATUS_IN_PROGRESS  1
@@ -612,7 +613,7 @@ checkldapauth(struct ldap_auth_request *request)
 		LDAPMessage *search_message;
 		LDAPMessage *entry;
 		char password[1024];
-		char *ldappassword = request->ldapbindpasswd;
+		char *ldap_password = request->ldapbindpasswd;
 		char *attributes[2] = {LDAP_NO_ATTRS, NULL};
 		char *dn;
 		char *c;
@@ -636,17 +637,31 @@ checkldapauth(struct ldap_auth_request *request)
 		}
 
 		/*
+		 * If the password of LDAP authentication is encrypted (ldap_password == "$bindpasswd"),
+		 * then decrypt it, replace the variable and continue using the real password.
+		 */
+		if (ldap_password != NULL && strcmp(ldap_password, "$bindpasswd") == 0 && request->client->ldap_key != NULL) {
+			int result = 0;
+			char *home_dir = getenv("HOME");
+			char ldapbindpass_filepath[NAME_MAX];
+
+			strcpy(ldapbindpass_filepath, home_dir);
+			strcat(ldapbindpass_filepath, "/.ldapbindpass");
+
+			ldap_password = load_file(ldapbindpass_filepath, NULL);
+			result = decrypt_ldap_password(request->client->ldap_key, ldap_password, password);
+			
+			free(ldap_password);
+			ldap_password = (result == 0) ? password : NULL;
+		}
+
+		/*
 		 * Bind with a pre-defined username/password (if available) for
 		 * searching. If none is specified, this turns into an anonymous bind.
 		 */
-		if (request->client->ldap_key != NULL) {
-			int deresult = decrypt_ldap_password(request->client->ldap_key, request->ldapbindpasswd, password);
-			ldappassword = (deresult == 0) ? password : NULL;
-		}
-
 		r = ldap_simple_bind_s(ldap,
 							   request->ldapbinddn ? request->ldapbinddn : "",
-							   ldappassword ? ldappassword : "");
+							   ldap_password ? ldap_password : "");
 		if (r != LDAP_SUCCESS) {
 			log_warning("could not perform initial LDAP bind for ldapbinddn \"%s\" on server \"%s\": %s",
 						request->ldapbinddn ? request->ldapbinddn : "",
