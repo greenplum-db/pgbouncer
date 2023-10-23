@@ -1448,7 +1448,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#3 test "LDAP with encrypted password"
+	#3 test "encrypted password"
 	openssl rand -base64 256 | tr -d '\n' >$ldap_keyfile
 	encrypted_passwd=$(echo -n "123456" | openssl enc -aes-256-cbc -base64 -md sha256 -pass file:${ldap_keyfile})
 	echo $encrypted_passwd > "${HOME}/.ldapbindpass"
@@ -1461,6 +1461,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
+	rm -f $ldap_keyfile
 	#4 test "multiple servers"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver="$ldap_server $ldap_server" ldapport=$ldap_port ldapbasedn="$ldap_basedn"
@@ -1491,7 +1492,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	# switch auth type from ldap to md5
+	#7 switch auth type from ldap to md5
 	touch userlist.txt # refresh timestamp to change the password of user ldapuser1
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 md5

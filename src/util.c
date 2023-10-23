@@ -21,7 +21,6 @@
  */
 
 #include "bouncer.h"
-#include "common/base64.h"
 
 #include <usual/crypto/md5.h>
 #include <usual/crypto/csrandom.h>
@@ -471,19 +470,30 @@ const char *pga_details(const PgAddr *a, char *dst, int dstlen)
 	return dst;
 }
 
-/* Can be expanded with cipher and digest names with the check for the presence of such types */
-int generate_key_iv(const char *password, int password_len, const unsigned char *salt, unsigned char *key, unsigned char *iv)
+int generate_key_iv(const char *password, const unsigned char *salt, const char *cipher, const char *digest,
+                    unsigned char *key, unsigned char *iv)
 {
-	int key_length = 0;
-    const EVP_CIPHER *cipher;
-    const EVP_MD *dgst = NULL;
+    int key_length = 0;
+    const EVP_CIPHER *evp_cipher;
+    const EVP_MD *evp_digest = NULL;
  
     OpenSSL_add_all_algorithms();
  
-    cipher = EVP_get_cipherbyname("aes-256-cbc");
-    dgst = EVP_get_digestbyname("sha256");
+    evp_cipher = EVP_get_cipherbyname(cipher);
+	if (!evp_cipher)
+	{
+		log_error("No such cipher: %s", cipher);
+		return 0;
+	}
  
-	key_length = EVP_BytesToKey(cipher, dgst, salt, (const unsigned char *)password, password_len, 1, key, iv);
+    evp_digest = EVP_get_digestbyname(digest);
+    if (!evp_digest)
+	{
+		log_error("No such digest: %s", digest);
+		return 0;
+	}
+
+    key_length = EVP_BytesToKey(evp_cipher, evp_digest, salt, (const unsigned char *)password, strlen(password), 1, key, iv);
 	return key_length;
 }
 
@@ -501,45 +511,4 @@ int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char
     declen += outlen;
     EVP_CIPHER_CTX_free(ctx);
     return declen;
-}
-
-int decrypt_ldap_password(const char* key_txt, const char* encrypt_txt, char* password)
-{
-    unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
-    unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
-
-    char debase64_encrypt[1024] = {0};
-    unsigned char salt[8] = {0};
-    char salt_flag = 0;
-	
-    int debase64_length = 0;
-    debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt);
-	if (debase64_length < 0)
-		return -1;
-
-    /* Check if Salted__ is used */
-    if (strncmp(debase64_encrypt, "Salted__", 8) == 0)
-    {
-        salt_flag = 1;
-        memcpy(salt, debase64_encrypt + 8, 8);
-    }
-
-	/* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
-    if (salt_flag)
-    {
-        if (generate_key_iv(key_txt, strlen(key_txt), salt, key, iv) == 0)
-            return -1;
-    }
-    else
-    {
-        if (generate_key_iv(key_txt, strlen(key_txt), NULL, key, iv) == 0)
-            return -1;
-    }
-
-    if (salt_flag)
-        decrypt_aes_256_cbc(debase64_encrypt + 16, debase64_length - 16, password, key, iv);
-    else
-        decrypt_aes_256_cbc(debase64_encrypt, debase64_length, password, key, iv);
-
-    return 0;
 }
