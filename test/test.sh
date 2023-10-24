@@ -1461,7 +1461,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	rm -f $ldap_keyfile
+	rm -f $ldap_keyfile "${HOME}/.ldapbindpass"
 	#4 test "multiple servers"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver="$ldap_server $ldap_server" ldapport=$ldap_port ldapbasedn="$ldap_basedn"

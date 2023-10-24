@@ -712,6 +712,7 @@ checkldapauth(struct ldap_auth_request *request)
 			strcpy(ldapbindpass_filepath, home_dir);
 			strcat(ldapbindpass_filepath, "/.ldapbindpass");
 			ldap_password = load_file(ldapbindpass_filepath, NULL);
+			if (ldap_password == NULL)
 			{
 				log_error("Failed to load encrypted LDAP password file \"%s\": %s", ldapbindpass_filepath, strerror(errno));
 				return false;
