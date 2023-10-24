@@ -96,7 +96,7 @@ AC_ARG_WITH(ldap,
         fi
         if test x"${have_ldap_header}" != x -a x"${have_libldap}" != x -a x"${have_pthreads}" = xyes; then
           ldap_support=yes
-          LIBS="-lcrypto $LIBS"
+          LIBS="$LIBS -lcrypto"
           AC_DEFINE(HAVE_LDAP, 1, [LDAP support])
         fi
     fi
