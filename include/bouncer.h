@@ -523,6 +523,7 @@ extern char *cf_resolv_conf;
 
 extern int cf_auth_type;
 extern char *cf_auth_file;
+extern char *cf_auth_cipher;
 extern char *cf_auth_key_file;
 extern char *cf_auth_query;
 extern char *cf_auth_user;

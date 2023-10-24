@@ -102,6 +102,7 @@ int cf_tcp_user_timeout;
 
 int cf_auth_type = AUTH_MD5;
 char *cf_auth_file;
+char *cf_auth_cipher;
 char *cf_auth_key_file;
 char *cf_auth_hba_file;
 char *cf_auth_user;
@@ -223,6 +224,7 @@ const struct CfLookup sslmode_map[] = {
 static const struct CfKey bouncer_params [] = {
 CF_ABS("admin_users", CF_STR, cf_admin_users, 0, ""),
 CF_ABS("application_name_add_host", CF_INT, cf_application_name_add_host, 0, "0"),
+CF_ABS("auth_cipher", CF_STR, cf_auth_cipher, 0, NULL),
 CF_ABS("auth_file", CF_STR, cf_auth_file, 0, NULL),
 CF_ABS("auth_hba_file", CF_STR, cf_auth_hba_file, 0, ""),
 CF_ABS("auth_key_file", CF_STR, cf_auth_key_file, 0, NULL),
@@ -852,6 +854,7 @@ static void cleanup(void)
 	xfree(&cf_listen_addr);
 	xfree(&cf_unix_socket_dir);
 	xfree(&cf_unix_socket_group);
+	xfree(&cf_auth_cipher);
 	xfree(&cf_auth_file);
 	xfree(&cf_auth_hba_file);
 	xfree(&cf_auth_key_file);

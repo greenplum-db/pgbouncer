@@ -577,13 +577,16 @@ formatsearchfilter(char *filter, int length, const char *pattern, const char *us
  */
 int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* password)
 {
+	const char *cipher = cf_auth_cipher ? cf_auth_cipher: "aes-256-cbc";
+
     unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
     unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
 
     int debase64_length = 0;
     char debase64_encrypt[1024] = {0};
+
     unsigned char salt[8] = {0};
-    char salt_flag = 0;
+    bool salt_flag = false;
 	
 	/* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
     debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt);
@@ -593,19 +596,19 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     /* Check if Salted__ is used */
     if (strncmp(debase64_encrypt, "Salted__", 8) == 0)
     {
-        salt_flag = 1;
+        salt_flag = true;
         memcpy(salt, debase64_encrypt + 8, 8);
     }
 
     /* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
     if (salt_flag)
     {
-        if (generate_key_iv(key_txt, salt, "aes-256-cbc", "sha256", key, iv) == 0)
+        if (generate_key_iv(key_txt, salt, cipher, "sha256", key, iv) == 0)
             return -1;
     }
     else
     {
-        if (generate_key_iv(key_txt, NULL, "aes-256-cbc", "sha256", key, iv) == 0)
+        if (generate_key_iv(key_txt, NULL, cipher, "sha256", key, iv) == 0)
             return -1;
     }
 
