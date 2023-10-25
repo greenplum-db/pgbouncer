@@ -25,7 +25,6 @@
 #include "scram.h"
 
 #include <usual/pgutil.h>
-#include <usual/fileutil.h>
 
 static const char *hdr2hex(const struct MBuf *data, char *buf, unsigned buflen)
 {

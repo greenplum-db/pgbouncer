@@ -476,25 +476,25 @@ int generate_key_iv(const char *password, const unsigned char *salt, const char 
     int key_length = 0;
     const EVP_CIPHER *evp_cipher;
     const EVP_MD *evp_digest = NULL;
- 
+
     OpenSSL_add_all_algorithms();
- 
+
     evp_cipher = EVP_get_cipherbyname(cipher);
-	if (!evp_cipher)
-	{
-		log_error("No such cipher: %s", cipher);
-		return 0;
-	}
- 
+    if (!evp_cipher)
+    {
+        log_error("No such cipher: %s", cipher);
+        return 0;
+    }
+
     evp_digest = EVP_get_digestbyname(digest);
     if (!evp_digest)
-	{
-		log_error("No such digest: %s", digest);
-		return 0;
-	}
+    {
+        log_error("No such digest: %s", digest);
+        return 0;
+    }
 
     key_length = EVP_BytesToKey(evp_cipher, evp_digest, salt, (const unsigned char *)password, strlen(password), 1, key, iv);
-	return key_length;
+    return key_length;
 }
 
 int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char *key, unsigned char *iv)
@@ -504,7 +504,7 @@ int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char
     EVP_CIPHER_CTX *ctx;
     ctx = EVP_CIPHER_CTX_new();
     EVP_CipherInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv, 0);
- 
+
     EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, enc_length);
     declen = outlen;
     EVP_CipherFinal(ctx, (unsigned char *)out + outlen, &outlen);
