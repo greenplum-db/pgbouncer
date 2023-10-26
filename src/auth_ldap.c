@@ -582,7 +582,8 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
     unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
 
-    int debase64_length = 0;
+    int depass_length = -1;
+    int debase64_length = -1;
     char debase64_encrypt[1024] = {0};
 
     unsigned char salt[8] = {0};
@@ -591,7 +592,10 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     /* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
     debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt);
     if (debase64_length < 0)
+    {
+        log_error("The password was incorrectly encoded or was not encoded in base64");
         return -1;
+    }
 
     /* Check if Salted__ is used */
     if (strncmp(debase64_encrypt, "Salted__", 8) == 0)
@@ -613,11 +617,11 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     }
 
     if (salt_flag)
-        decrypt_aes_256_cbc(debase64_encrypt + 16, debase64_length - 16, password, key, iv);
+        depass_length = decrypt_input(debase64_encrypt + 16, debase64_length - 16, cipher, password, key, iv);
     else
-        decrypt_aes_256_cbc(debase64_encrypt, debase64_length, password, key, iv);
+        depass_length = decrypt_input(debase64_encrypt, debase64_length, cipher, password, key, iv);
 
-    return 0;
+    return depass_length;
 }
 /*
  * Perform LDAP authentication
@@ -720,11 +724,10 @@ checkldapauth(struct ldap_auth_request *request)
             }
 
             result = decrypt_ldap_password(ldap_password, ldap_key, decrypted_password);
-            ldap_password = (result == 0) ? decrypted_password : NULL;
 
             free(ldap_key);
             free(ldap_password);
-            ldap_password = NULL;
+            ldap_password = (result >= 0) ? decrypted_password : NULL;
         }
 
 		/*

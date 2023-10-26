@@ -497,15 +497,22 @@ int generate_key_iv(const char *password, const unsigned char *salt, const char 
     return key_length;
 }
 
-int decrypt_aes_256_cbc(const char *in, int enc_length, char *out, unsigned char *key, unsigned char *iv)
+int decrypt_input(const char *in, int length, const char *cipher, char *out, unsigned char *key, unsigned char *iv)
 {
     int declen = 0;
     int outlen = 0;
-    EVP_CIPHER_CTX *ctx;
-    ctx = EVP_CIPHER_CTX_new();
-    EVP_CipherInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv, 0);
+    EVP_CIPHER_CTX *ctx = NULL;
+    const EVP_CIPHER *evp_cipher = NULL;
 
-    EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, enc_length);
+    ctx = EVP_CIPHER_CTX_new();
+    evp_cipher = EVP_get_cipherbyname(cipher);
+    if (!evp_cipher) {
+        log_error("No such cipher: %s", cipher);
+        return -1;
+    }
+
+    EVP_CipherInit_ex(ctx, evp_cipher, NULL, key, iv, 0);
+    EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, length);
     declen = outlen;
     EVP_CipherFinal(ctx, (unsigned char *)out + outlen, &outlen);
     declen += outlen;

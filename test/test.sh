@@ -1449,11 +1449,13 @@ EOF
 		re=1
 	fi
 	#3 test "encrypted password"
+    ldap_binddn=$ldap_rootdn
+    ldap_bindpass=$ldap_rootpw
 	openssl rand -base64 256 | tr -d '\n' >$ldap_keyfile
-	encrypted_passwd=$(echo -n "123456" | openssl enc -aes-256-cbc -base64 -md sha256 -pass file:${ldap_keyfile})
-	echo $encrypted_passwd > "${HOME}/.ldapbindpass"
+	encrypted_passwd=$(echo -n "$ldap_bindpass" | openssl enc -aes-256-cbc -base64 -md sha256 -pass file:${ldap_keyfile})
+	echo -n $encrypted_passwd > "${HOME}/.ldapbindpass"
 cat >hba.conf<<EOF
-host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapbindpasswd="\$bindpasswd" ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapsearchfilter="uid=\$username"
+host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapbindpasswd="\$bindpasswd" ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapbinddn="$ldap_binddn"
 EOF
 	echo 'auth_type = hba' >> test.ini
 	admin "reload" && sleep 1
@@ -1461,6 +1463,21 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
+    # with random cipher
+    ciphers=($(openssl enc -ciphers | tail -n +2))
+    random_ciphers=($(printf "%s\n" "${ciphers[@]}" | shuf -n 1))
+    for cipher in "${random_ciphers[@]}"
+    do
+        encrypted_passwd=$(echo -n "$ldap_bindpass" | openssl enc $cipher -base64 -md sha256 -pass file:${ldap_keyfile})
+        echo -n $encrypted_passwd > "${HOME}/.ldapbindpass"
+        echo "auth_cipher = ${cipher:1}" >> test.ini
+        admin "reload" && sleep 1
+        PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+        if [ $? -ne 0 ] ;then
+            re=1
+        fi
+        sed -i '$d' test.ini
+    done
 	rm -f $ldap_keyfile "${HOME}/.ldapbindpass"
 	#4 test "multiple servers"
 cat >hba.conf<<EOF
