@@ -116,7 +116,9 @@ Basic setup and usage is as follows.
     Note: Does not work on Windows; **pgbouncer** need to run as service there.
 
 `-R`, `--reboot`
-:   Do an online restart. That means connecting to the running process,
+:   **DEPRECATED: Instead of this option use a rolling restart with multiple
+    pgbouncer processes listening on the same port using so_reuseport instead**
+    Do an online restart. That means connecting to the running process,
     loading the open sockets from it, and then using them.  If there
     is no active process, boot normally.
     Note: Works only if OS supports Unix sockets and the `unix_socket_dir`
@@ -162,6 +164,10 @@ Additionally, the user name **pgbouncer** is allowed to log in without password,
 if the login comes via the Unix socket and the client has same Unix user UID
 as the running process.
 
+The admin console currently only supports the simple query protocol.
+Some drivers use the extended query protocol for all commands; these
+drivers will not work for this.
+
 ### Show commands
 
 The **SHOW** commands output information. Each command is described below.
@@ -196,7 +202,8 @@ total_query_time
     connected to PostgreSQL, executing queries.
 
 total_wait_time
-:   Time spent by clients waiting for a server, in microseconds.
+:   Time spent by clients waiting for a server, in microseconds. Updated
+    when a client connection is assigned a backend connection.
 
 avg_xact_count
 :   Average transactions per second in last stat period.
@@ -217,8 +224,9 @@ avg_query_time
 :   Average query duration, in microseconds.
 
 avg_wait_time
-:   Time spent by clients waiting for a server, in microseconds (average
-    per second).
+:   Average time spent by clients waiting for a server that were assigned a
+    backend connection within the current `stats_period`, in microseconds
+    (averaged per second within that period).
 
 #### SHOW STATS_TOTALS
 
@@ -246,7 +254,8 @@ database
 
 state
 :   State of the pgbouncer server connection, one of **active**,
-    **idle**, **used**, **tested**, **new**.
+    **idle**, **used**, **tested**, **new**, **active_cancel**,
+    **being_canceled**.
 
 addr
 :   IP address of PostgreSQL server.
@@ -267,10 +276,10 @@ request_time
 :   When last request was issued.
 
 wait
-:   Current waiting time in seconds.
+:   Not used for server connections.
 
 wait_us
-:   Microsecond part of the current waiting time.
+:   Not used for server connections.
 
 close_needed
 :   1 if the connection will be closed as soon as possible,
@@ -294,6 +303,14 @@ remote_pid
 tls
 :   A string with TLS connection information, or empty if not using TLS.
 
+application_name
+:   A string containing the `application_name` set on the linked client connection,
+    or empty if this is not set, or if there is no linked connection.
+
+prepared_statements
+:  The amount of prepared statements that are prepared on the server. This
+   number is limited by the `max_prepared_statements` setting.
+
 #### SHOW CLIENTS
 
 type
@@ -306,7 +323,8 @@ database
 :   Database name.
 
 state
-:   State of the client connection, one of **active** or **waiting**.
+:   State of the client connection, one of **active**, **waiting**,
+    **active_cancel_req**, or **waiting_cancel_req**.
 
 addr
 :   IP address of client.
@@ -349,6 +367,13 @@ remote_pid
 tls
 :   A string with TLS connection information, or empty if not using TLS.
 
+application_name
+:   A string containing the `application_name` set by the client
+    for this connection, or empty if this was not set.
+
+prepared_statements
+:  The amount of prepared statements that the client has prepared
+
 #### SHOW POOLS
 
 A new pool entry is made for each couple of (database, user).
@@ -360,16 +385,28 @@ user
 :   User name.
 
 cl_active
-:   Client connections that are linked to server connection and can process queries.
+:   Client connections that are either linked to server connections or are idle with no queries waiting to be processed.
 
 cl_waiting
 :   Client connections that have sent queries but have not yet got a server connection.
 
-cl_cancel_req
+cl_active_cancel_req
+:   Client connections that have forwarded query cancellations to the server and
+    are waiting for the server response.
+
+cl_waiting_cancel_req
 :   Client connections that have not forwarded query cancellations to the server yet.
 
 sv_active
 :   Server connections that are linked to a client.
+
+sv_active_cancel
+:   Server connections that are currently forwarding a cancel request.
+
+sv_being_canceled
+:   Servers that normally could become idle but are waiting to do so until
+    all in-flight cancel requests have completed that were sent to cancel
+    a query on this server.
 
 sv_idle
 :   Server connections that are unused and immediately usable for client queries.
@@ -396,6 +433,26 @@ maxwait_us
 
 pool_mode
 :   The pooling mode in use.
+
+#### SHOW PEER_POOLS
+
+A new peer_pool entry is made for each configured peer.
+
+database
+:   ID of the configured peer entry.
+
+cl_active_cancel_req
+:   Client connections that have forwarded query cancellations to the server and
+    are waiting for the server response.
+
+cl_waiting_cancel_req
+:   Client connections that have not forwarded query cancellations to the server yet.
+
+sv_active_cancel
+:   Server connections that are currently forwarding a cancel request.
+
+sv_login
+:   Server connections currently in the process of logging in.
 
 #### SHOW LISTS
 
@@ -488,6 +545,20 @@ paused
 
 disabled
 :   1 if this database is currently disabled, else 0.
+
+#### SHOW PEERS
+
+peer_id
+:   ID of the configured peer entry.
+
+host
+:   Host pgbouncer connects to.
+
+port
+:   Port pgbouncer connects to.
+
+pool_size
+:   Maximum number of server connections that can be made to this peer
 
 #### SHOW FDS
 
@@ -588,14 +659,20 @@ count
 
 Show the PgBouncer version string.
 
+#### SHOW STATE
+
+Show the PgBouncer state settings. Current states are active, paused and suspended.
 
 ### Process controlling commands
 
 #### PAUSE [db]
 
-PgBouncer tries to disconnect from all servers, first waiting for all queries
-to complete. The command will not return before all queries are finished.  To be used
-at the time of database restart.
+PgBouncer tries to disconnect from all servers. Disconnecting each server connection
+waits for that server connection to be released according to the server pool's pooling
+mode (in transaction pooling mode, the transaction must complete, in statement mode,
+the statement must complete, and in session pooling mode the client must disconnect).
+The command will not return before all server connections have been disconnected.
+To be used at the time of database restart.
 
 If database name is given, only that database will be paused.
 
@@ -662,8 +739,10 @@ The PgBouncer process will exit.
 
 #### RELOAD
 
-The PgBouncer process will reload its configuration file and update
-changeable settings.
+The PgBouncer process will reload its configuration files and update
+changeable settings.  This includes the main configuration file as
+well as the files specified by the settings `auth_file` and
+`auth_hba_file`.
 
 PgBouncer notices when a configuration file reload changes the
 connection parameters of a database definition.  An existing server
