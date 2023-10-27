@@ -1,6 +1,317 @@
 PgBouncer changelog
 ===================
 
+PgBouncer 1.21.x
+----------------
+
+**2023-10-16  -  PgBouncer 1.21.0  -  "The one with prepared statements"**
+
+- Features
+  * Add support for protocol-level named prepared statements! This is probably
+    one of the most requested features for PgBouncer. Using prepared statements
+    together with PgBouncer can reduce the CPU load on your system a lot (both
+    at the PgBouncer side and the PostgreSQL side). In synthetic benchmarks
+    this feature was able to increase query throughput anywhere from 15% to
+    250%, depending on the workload. To benefit from this new feature you need
+    to change the new `max_prepared_statements` setting to a non-zero value
+    (the exact value depends on your workload, but 100 is probably reasonable).
+    See [the docs on
+    `max_prepared_statements`](https://pgbouncer.org/config.html#max_prepared_statements)
+    for details on how the feature works, its limitations, and how to tune the
+    value. After doing that you need to make sure your client library
+    actually uses prepared statements. How to do that differs for each client,
+    so you should look at the docs for the client you're using. This feature
+    has been tested very well before releasing, but performance issues or
+    bugs might very well exist due to the complexity of the feature. If you
+    find those, please report them. ([#845])
+
+- Changes
+  * Improve security of OpenSSL settings, the defaults used were VERY outdated.
+    With this release the defaults are now the same as the OpenSSL defaults of the
+    system that runs PgBouncer. ([#948] & [libusual/#41])
+  * PgBouncer now uses OpenSSL to calculate MD5 hashes when possible. This is
+    necessary to use PgBouncer in a FIPS compliant way. ([#949])
+  * Maintain `min_pool_size` for pools with a forced user even if no clients
+    are connected to PgBouncer ([#947])
+  * The way a `peer_id` is encoded in the cancellation token by PgBouncer has
+    changed, this means that peering between different PgBouncer versions will
+    not work if not all of them are on the same side of the v1.21.0 version
+    boundary. ([#945])
+
+- Fixes
+  * Fix crash with error message: "FATAL in function client\_proto(): bad
+    client state: 6/7" ([#928]) (bug introduced in 1.18.0)
+  * Fix crash with error message: "FATAL in function server\_proto(): server in
+    bad state: 11" ([#927]) (bug introduced in 1.18.0)
+  * Reduce cancellation sending log level ([#903])
+  * Fix slog log prefix for peers ([#922])
+  * Fix typos in docs ([#932])
+  * Fix errors pointed out by static analyzer ([#943])
+  * Don't kill all waiting clients on temporary FATAL errors during login ([#946])
+  * Use auto-database when database in `auth_dbname` is not explicitly configured
+    ([#921])
+
+- Cleanup
+  * Remove support for udns ([#938])
+
+[#845]: https://github.com/pgbouncer/pgbouncer/pull/845
+[#948]: https://github.com/pgbouncer/pgbouncer/pull/948
+[#949]: https://github.com/pgbouncer/pgbouncer/pull/949
+[#947]: https://github.com/pgbouncer/pgbouncer/pull/947
+[#945]: https://github.com/pgbouncer/pgbouncer/pull/945
+[#903]: https://github.com/pgbouncer/pgbouncer/pull/903
+[#922]: https://github.com/pgbouncer/pgbouncer/pull/922
+[#932]: https://github.com/pgbouncer/pgbouncer/pull/932
+[#928]: https://github.com/pgbouncer/pgbouncer/pull/928
+[#927]: https://github.com/pgbouncer/pgbouncer/pull/927
+[#943]: https://github.com/pgbouncer/pgbouncer/pull/943
+[#946]: https://github.com/pgbouncer/pgbouncer/pull/946
+[#921]: https://github.com/pgbouncer/pgbouncer/pull/921
+[#938]: https://github.com/pgbouncer/pgbouncer/pull/938
+[libusual/#41]: https://github.com/libusual/libusual/pull/41
+
+
+PgBouncer 1.20.x
+----------------
+
+**2023-08-09  -  PgBouncer 1.20.1  -  "Optional options"**
+
+- Fixes
+  * Fix regression where putting `options` inside `ignore_startup_parameters`
+    would not ignore unknown parameters inside the `options` startup parameter
+    anymore. ([#908]) (regression was introduced in 1.20.0)
+  * Fix confusing typo in the docs ([#917])
+
+[#908]: https://github.com/pgbouncer/pgbouncer/pull/908
+[#917]: https://github.com/pgbouncer/pgbouncer/pull/917
+
+**2023-07-20  -  PgBouncer 1.20.0  -  "A funny name goes here"**
+
+- Deprecations
+  * Online restart option is now considered deprecated. The feature has
+    received very little love in recent years. There are multiple known issues
+    with it and newly added features often don't support it. The recommended
+    method to do online restarts these days is using the `so_reuseport` and
+    `peers` feature. That way you can have multiple different PgBouncer
+    processes running on the same port. Then by restarting those processes
+    one-by-one, you can make sure there's always a PgBouncer process listening
+    on the desired port. ([#894])
+
+- Features
+  * Introduce the `track_extra_parameters` which allows tracking of more
+    parameters in transaction pooling mode. Previously, PgBouncer only tracked
+    `application_name`, `DateStyle`, `TimeZone` and
+    `standard_conforming_strings`. Now PgBouncer also tracks `IntervalStyle` by
+    default. And by changing `track_extra_parameters` you can track even more
+    settings, but only [ones that PostgreSQL reports back to the
+    client][guc_report]. If you're using Citus 12.0+, then Citus will make sure
+    that PostgreSQL also reports `search_path` back to the client. So if you use
+    Citus you can add `search_path` to the `track_extra_parameters` setting.
+    ([#867])
+  * Forward SQLSTATE in authentication phase. This allows the detection of
+    database not existing, which is done by Npgsql (a .NET data provider for
+    PostgreSQL). ([#814])
+  * Change default `server_tls_sslmode` to `prefer`. ([#866])
+  * Add support for the `options` startup parameter. This allows usage of [the
+    `PGOPTIONS` environment variable that `psql` and `libpq` know
+    about][pgoptions]. Using this variable you can set any PostgreSQL parameter at
+    startup. This only works for PostgreSQL parameters that PgBouncer tracks
+    through `track_extra_parameters`. ([#878])
+
+- Fixes
+  * Don't crash when the `pgbouncer` admin database is used as auth_dbname. It's
+    still not supported, but this now gives a clear error instead of crashing.
+    ([#817])
+  * Fix name of `peer_cache` in `SHOW MEM`. It was incorrectly showing up as
+    `db_cache` before. ([#864])
+  * Fix src/dst confusion in log. PgBouncer was logging a source IP when it
+    meant to log the destination IP. ([#880])
+  * Only log admin connections over unix sockets when `log_connections` is set
+    to `1`. ([#883])
+
+[guc_report]: https://www.postgresql.org/docs/15/protocol-flow.html#PROTOCOL-ASYNC
+[pgoptions]: https://www.postgresql.org/docs/current/config-setting.html#id-1.6.7.4.5
+[#867]: https://github.com/pgbouncer/pgbouncer/pull/867
+[#814]: https://github.com/pgbouncer/pgbouncer/pull/814
+[#866]: https://github.com/pgbouncer/pgbouncer/pull/866
+[#878]: https://github.com/pgbouncer/pgbouncer/pull/878
+[#817]: https://github.com/pgbouncer/pgbouncer/pull/817
+[#864]: https://github.com/pgbouncer/pgbouncer/pull/864
+[#880]: https://github.com/pgbouncer/pgbouncer/pull/880
+[#883]: https://github.com/pgbouncer/pgbouncer/pull/883
+[#894]: https://github.com/pgbouncer/pgbouncer/pull/894
+
+PgBouncer 1.19.x
+----------------
+
+**2023-05-31  -  PgBouncer 1.19.1  -  "Sunny Spring"**
+
+This is a minor release that fixes a few recently introduced bugs:
+
+- Fixes
+  * Fix: FATAL in function disconnect_client(): bad client state: 0 ([#846])
+    (bug introduced in 1.18.0)
+  * Fix: FATAL in function server_proto(): server in bad state: 14 ([#849])
+    (bug introduced in 1.18.0)
+  * Add files required to run python based tests to release tarball ([#852])
+    (new tests introduced in 1.19.0)
+
+[#846]: https://github.com/pgbouncer/pgbouncer/pull/846
+[#849]: https://github.com/pgbouncer/pgbouncer/pull/849
+[#852]: https://github.com/pgbouncer/pgbouncer/pull/852
+
+**2023-05-04  -  PgBouncer 1.19.0  -  "The old-fashioned, human-generated kind"**
+
+- Features
+  * Add `auth_dbname` option, which specifies against which database
+    to run the `auth_query`. ([#764])
+  * Add the `SHOW STATE` command, which shows if PgBouncer is active,
+    paused or suspended. ([#528])
+  * Add support for peering between PgBouncer processes.  This allows
+    configuring PgBouncer such that cancellation requests continue to
+    work when multiple different PgBouncer processes are behind a
+    single load balancer. ([#666])
+  * Add a dedicated `cancel_wait_timeout` setting, which determines
+    after how long to give up on forwarding a cancel request.  Default
+    is 10 seconds. ([#833])
+  * New testing framework ([#792])
+
+- Fixes
+  * Fix possible memory leak on TLS handshake failure. ([#796])
+  * Give more accurate error messages for unsupported command-line
+    options on Windows. ([#620])
+  * Fix calling `disconnect_server` on a server in `BEING_CANCELED`
+    state. ([#815]) (introduced in 1.18.0)
+  * Don't exit with a non-zero status when a `SIGTERM` is
+    received. ([#834])
+  * Fail hard during startup when a socket could not be created in
+    `unix_socket_dir`. ([#830])
+  * Fail hard during startup when none of the addresses in
+    `listen_addr` could be listened on. ([#838])
+  * Give more warning messages with more information when
+    `sbuf_connect` fails.  This is especially useful when failing to
+    create Unix sockets. ([#837])
+
+- Cleanups
+  * Various CI updates for better performance
+  * Removed AppVeyor
+
+[#528]: https://github.com/pgbouncer/pgbouncer/issues/528
+[#620]: https://github.com/pgbouncer/pgbouncer/pull/620
+[#666]: https://github.com/pgbouncer/pgbouncer/pull/666
+[#764]: https://github.com/pgbouncer/pgbouncer/pull/764
+[#792]: https://github.com/pgbouncer/pgbouncer/pull/792
+[#796]: https://github.com/pgbouncer/pgbouncer/pull/796
+[#815]: https://github.com/pgbouncer/pgbouncer/pull/815
+[#830]: https://github.com/pgbouncer/pgbouncer/pull/830
+[#833]: https://github.com/pgbouncer/pgbouncer/pull/833
+[#834]: https://github.com/pgbouncer/pgbouncer/pull/834
+[#837]: https://github.com/pgbouncer/pgbouncer/pull/837
+[#838]: https://github.com/pgbouncer/pgbouncer/pull/838
+
+PgBouncer 1.18.x
+----------------
+
+**2022-12-12  -  PgBouncer 1.18.0  -  "No real mystery"**
+
+- Features
+  * Add `application_name` to `SHOW CLIENTS`/`SERVERS`/`SOCKETS`
+    output ([#449](https://github.com/pgbouncer/pgbouncer/pull/449))
+  * Add information about cancel requests to `SHOW
+    CLIENTS`/`SERVERS`/`POOLS` output
+    ([#782](https://github.com/pgbouncer/pgbouncer/pull/782))
+
+- Fixes
+  * Fail `sbuf_send_pending` operation if destination socket is closed
+    ([#652](https://github.com/pgbouncer/pgbouncer/pull/652))
+  * Fix a few possible crashes
+    ([#700](https://github.com/pgbouncer/pgbouncer/pull/700),
+    [#730](https://github.com/pgbouncer/pgbouncer/pull/730))
+  * Fix for overflow bug in comma-separated host list feature, causing
+    connection to get re-routed to Unix socket
+    ([#747](https://github.com/pgbouncer/pgbouncer/pull/747))
+  * Don't evict connections to achieve `min_pool_size`
+    ([#648](https://github.com/pgbouncer/pgbouncer/pull/648))
+  * Fix `SHOW HELP` with PostgreSQL 15
+    ([#769](https://github.com/pgbouncer/pgbouncer/issues/769))
+  * Fix race condition in query cancelation handling.  It was possible
+    that a query cancellation for one client canceled a query for
+    another one.  This could happen when a cancel request was received
+    by PgBouncer when the query it was meant to cancel already
+    completed by itself.
+    ([#717](https://github.com/pgbouncer/pgbouncer/pull/717))
+
+- Cleanups
+  * Various CI updates
+
+PgBouncer 1.17.x
+----------------
+
+**2022-03-23  -  PgBouncer 1.17.0  -  "A line has been drawn"**
+
+- Features
+  * A database definition can specify a comma-separated host list.
+    The hosts will be connected to in a round-robin manner.
+  * When connecting to a non-existing database, the error ("no such
+    database") is now reported after authentication.  This prevents
+    unauthenticated clients from probing what databases exist.  (This
+    is similar to the change in version 1.15.0 to report missing users
+    after authentication.)
+  * Don't send server disconnect errors to the client before login.
+    This could reveal not-quite-public information, such as
+    configuration details, to a client that is not logged in yet.
+  * Increase maximum password length again.  Apparently, the last
+    increase wasn't enough for long enough.
+  * Remove automatic `auth_file` reload.  The `auth_file` is now
+    reread only on configuration file reload, no longer automatically
+    as soon as it is changed.
+  * The Windows build now includes a version-information resource
+    file.
+  * The Windows builds created on CI are now statically linked, so
+    they can be used directly without requiring any dependencies.
+
+- Fixes
+  * OpenSSL 3 support has been fixed.  Previous releases would crash.
+  * Don't apply fast-fail at connect time.  This is part of the
+    above-mentioned change to not report server errors before
+    authentication.  It also fixes a particular situation with SCRAM
+    pass-through authentication, where we need to allow the
+    client-side authentication exchange in order to be able to fix the
+    server-side connection by re-authenticating.  The fast-fail
+    mechanism still applies right after authentication, so the
+    effective observed behavior will be the same in most situations.
+  * Change `auth_type` in sample `pgbouncer.ini` to `md5` to match the
+    built-in default.  Some deploy this file as the default
+    configuration file, so check if this changed configuration still
+    makes sense for you.
+  * Fix crash at exit in assert-enabled builds.
+  * Improve `tcp_defer_accept` documentation and behavior.  The
+    documentation was incorrect and misleading about the default.  In
+    some cases the wrong value was showing in "show config".  Also, if
+    it's set but not supported, give an error instead of ignoring,
+    similar to how other platform-specific socket options are handled.
+  * Fix build with c-ares on Windows.  c-ares >=1.18.0 is now required
+    on Windows.
+
+- Cleanups
+  * Most deprecation warnings from Autoconf >=2.70 have been cleaned
+    up.  Older Autoconf versions are still supported.
+  * Cirrus CI use has been expanded to more platforms.
+  * Travis CI support has been removed.
+  * Update locations to search for default root CA file, to cover more
+    platforms, such as Fedora/RHEL/CentOS.
+  * Python scripts now all use `python3` by default.  Python 2
+    compatibility is no longer maintained.
+  * The test suite scripts use `command -v` instead of `which`, which
+    is deprecated.
+  * Several error messages have been reworded to make it clearer which
+    command or configuration setting they relate to.
+  * The test suite scripts no longer require GNU sed.
+  * `make check` now works on Windows (but not the SSL test suite
+    yet).
+  * Document that the admin console only supports the simple query
+    protocol, and give better error messages about this.
+
 PgBouncer 1.16.x
 ----------------
 
@@ -17,7 +328,7 @@ This is a minor release with a security fix.
   abused to send faked SQL commands to the server, although that would
   only work if PgBouncer did not demand any authentication data.
   (However, a PgBouncer setup relying on SSL certificate
-  authentication might well not do so.)
+  authentication might well not do so.)  (CVE-2021-3935)
 
 **2021-08-09  -  PgBouncer 1.16.0  -  "Fended off a jaguar"**
 

@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 
 AC_INIT([PgBouncer],
-        [1.16.1],
+        [1.21.0],
         [https://github.com/pgbouncer/pgbouncer/issues], [],
         [https://www.pgbouncer.org/])
 AC_CONFIG_SRCDIR(src/janitor.c)
@@ -17,7 +17,7 @@ AC_USUAL_PROGRAM_CHECK
 PKG_PROG_PKG_CONFIG
 
 AC_CHECK_PROGS(PANDOC, pandoc, pandoc)
-AC_CHECK_PROGS(PYTHON, [python python3 python2], python)
+AC_CHECK_PROGS(PYTHON, [python3 python], python3)
 
 dnl check for windows tools
 if test "$PORTNAME" = "win32"; then
@@ -79,28 +79,6 @@ AC_ARG_WITH(pam,
     fi
   ], [])
 
-dnl Check for LDAP authentication support
-ldap_support=no
-AC_ARG_WITH(ldap,
-  AS_HELP_STRING([--with-ldap], [build with LDAP support]),
-  [ LDAP=
-    if test "$withval" != no; then
-        have_pthreads=no
-        # Look for LDAP header and lib
-        AC_CHECK_HEADERS(ldap.h, [have_ldap_header=t])
-        AC_CHECK_HEADERS(pthread.h, [have_pthreads=yes])
-        AC_SEARCH_LIBS(ldap_initialize, ldap, [have_libldap=t])
-        AC_SEARCH_LIBS(pthread_create, pthread, [], [have_pthreads=no])
-        if test x"${have_pthreads}" != xyes; then
-           AC_MSG_ERROR([pthread library should be available for LDAP support])
-        fi
-        if test x"${have_ldap_header}" != x -a x"${have_libldap}" != x -a x"${have_pthreads}" = xyes; then
-          ldap_support=yes
-          AC_DEFINE(HAVE_LDAP, 1, [LDAP support])
-        fi
-    fi
-  ], [])
-
 dnl Check for systemd support
 AC_MSG_CHECKING([whether to build with systemd support])
 AC_ARG_WITH(systemd,
@@ -121,7 +99,6 @@ fi
 
 # make sure all vars are set
 use_cares=no
-use_udns=no
 use_evdns=no
 
 dnl Find c-ares
@@ -151,51 +128,18 @@ fi
 if test "$use_cares" = "yes"; then
   AC_DEFINE(USE_CARES, 1, [Use c-ares for name resolution.])
 
-  # does it support SOA parse
   tmp_CFLAGS="$CFLAGS"
   tmp_LIBS="$LIBS"
   CFLAGS="$CARES_CFLAGS $CFLAGS"
   LIBS="$CARES_LIBS $LIBS"
+  # does it support SOA parse
   AC_CHECK_FUNCS(ares_parse_soa_reply)
+  # portability substitute for arpa/nameser.h, needed mainly for Windows
+  AC_CHECK_HEADERS([ares_nameser.h])
   LIBS="$tmp_LIBS"
   CFLAGS="$tmp_CFLAGS"
 
 else # !cares
-
-dnl Find libudns
-AC_MSG_CHECKING([whether to use libudns])
-AC_ARG_WITH(udns,
-  AS_HELP_STRING([--with-udns@<:@=PREFIX@:>@], [build with udns support]),
-  [ if test "$withval" = "no"; then
-      use_udns=no
-    elif test "$withval" = "yes"; then
-      use_udns=yes
-    else
-      use_udns=yes
-      CPPFLAGS="$CPPFLAGS -I$withval/include"
-      LDFLAGS="$LDFLAGS -L$withval/lib"
-    fi
-  ], [])
-AC_MSG_RESULT([$use_udns])
-
-if test "$use_udns" = "yes"; then
-  AC_DEFINE(USE_UDNS, 1, [Use UDNS for name resolution.])
-  LIBS="-ludns $LIBS"
-  AC_MSG_CHECKING([whether libudns is available])
-  AC_LINK_IFELSE([AC_LANG_SOURCE([
-    #include <sys/types.h>
-    #include <sys/time.h>
-    #include <stddef.h>
-    #include <udns.h>
-    int main(void) {
-      struct dns_ctx *ctx = NULL;
-      dns_init(ctx, 0);
-      dns_reset(ctx);
-    } ])],
-  [AC_MSG_RESULT([found])],
-  [AC_MSG_ERROR([not found, cannot proceed])])
-
-else # !udns
 
 dnl Allow user to override the decision
 AC_ARG_ENABLE(evdns, AS_HELP_STRING([--disable-evdns], [do not use libevent for DNS lookups]),
@@ -209,11 +153,9 @@ else
 fi
 
 dnl Check if need getaddinfo_a compat
-if test "$use_udns.$use_cares.$use_evdns" = "no.no.no"; then
+if test "$use_cares.$use_evdns" = "no.no"; then
   AC_USUAL_GETADDRINFO_A
 fi
-
-fi # !udns
 
 fi # !cares
 
@@ -224,6 +166,10 @@ AC_USUAL_TLS
 AC_USUAL_DEBUG
 AC_USUAL_CASSERT
 AC_USUAL_WERROR
+
+PACKAGE_VERSION_4B=`echo "${PACKAGE_VERSION}.0" | sed -e 's/\./,/g'`
+AC_DEFINE_UNQUOTED(PACKAGE_VERSION_4B, [$PACKAGE_VERSION_4B],
+                   [Define to the version of this package for Windows resource file (1,2,3,4).])dnl
 
 dnl Output findings
 AC_CONFIG_FILES([config.mak])
@@ -240,8 +186,6 @@ echo "Results:"
 dnl Note: Report here should match selection in src/dnslookup.c
 if test "$use_cares" = "yes"; then
   echo "  adns    = c-ares"
-elif test "$use_udns" = "yes"; then
-  echo "  adns    = udns"
 elif test "$use_evdns" = "yes"; then
   echo "  adns    = evdns2"
 elif test "$ac_cv_usual_glibc_gaia" = "yes"; then
@@ -249,14 +193,7 @@ elif test "$ac_cv_usual_glibc_gaia" = "yes"; then
 else
   echo "  adns    = compat"
 fi
-if test -f ldap_configured; then
-	rm -f ldap_configured
-fi
-if test "$ldap_support" = "yes"; then
-        echo "Yes" > ldap_configured
-fi
 echo "  pam     = $pam_support"
-echo "  ldap    = $ldap_support"
 echo "  systemd = $with_systemd"
 echo "  tls     = $tls_support"
 echo ""
