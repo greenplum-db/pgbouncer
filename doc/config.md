@@ -83,6 +83,96 @@ Not supported on Windows.
 
 Default: not set
 
+### auth_file
+
+The name of the file to load user names and passwords from.  See
+section [Authentication file format](#authentication-file-format) below about details.
+
+Default: not set
+
+### auth_hba_file
+
+HBA configuration file to use when `auth_type` is `hba`.
+
+Default: not set
+
+### auth_type
+
+How to authenticate users.
+
+pam
+:   PAM is used to authenticate users, `auth_file` is ignored. This method is not
+    compatible with databases using the `auth_user` option. The service name reported to
+    PAM is "pgbouncer". `pam` is not supported in the HBA configuration file.
+
+ldap
+:   LDAP is used to authenticate users with ldap server(OPENLDAP on linux or AD on windows).
+    In order to use ldap, `auth_type` needs to be set to `hba`. The value of
+    `auth_hba_file` has also to be set. And the content of the `auth_hba_file` could be
+    the same format like `pg_hba.conf` in postgres.
+    AD server sends LDAP referrals and Linux chases those LDAP referrals by default.
+    On the one hand, chasing LDAP referrals may spend more time. 
+    On the other hand, it will hang if the referrals broken.
+    Disable chasing LDAP referrals can solve this issue:
+
+    echo "REFERRALS off" >> $HOME/.ldaprc
+
+hba
+:   The actual authentication type is loaded from `auth_hba_file`.  This allows different
+    authentication methods for different access paths, for example: connections
+    over Unix socket use the `peer` auth method, connections over TCP
+    must use TLS.
+
+cert
+:   Client must connect over TLS connection with a valid client certificate.
+    The user name is then taken from the CommonName field from the certificate.
+
+md5
+:   Use MD5-based password check.  This is the default authentication
+    method.  `auth_file` may contain both MD5-encrypted and plain-text
+    passwords.  If `md5` is configured and a user has a SCRAM secret,
+    then SCRAM authentication is used automatically instead.
+
+scram-sha-256
+:   Use password check with SCRAM-SHA-256.  `auth_file` has to contain
+    SCRAM secrets or plain-text passwords.
+
+plain
+:   The clear-text password is sent over the wire.  Deprecated.
+
+trust
+:   No authentication is done. The user name must still exist in `auth_file`.
+
+any
+:   Like the `trust` method, but the user name given is ignored. Requires that all
+    databases are configured to log in as a specific user.  Additionally, the console
+    database allows any user to log in as admin.
+
+### auth_query
+
+Query to load user's password from database.
+
+Direct access to pg_shadow requires admin rights.  It's preferable to
+use a non-superuser that calls a SECURITY DEFINER function instead.
+
+Note that the query is run inside the target database.  So if a function
+is used, it needs to be installed into each database.
+
+Default: `SELECT usename, passwd FROM pg_shadow WHERE usename=$1`
+
+### auth_user
+
+If `auth_user` is set, then any user not specified in `auth_file` will be
+queried through the `auth_query` query from pg_shadow in the database,
+using `auth_user`. The password of `auth_user` will be taken from `auth_file`.
+(If the `auth_user` does not require a password then it does not need
+to be defined in `auth_file`.)
+
+Direct access to pg_shadow requires admin rights.  It's preferable to
+use a non-superuser that calls a SECURITY DEFINER function instead.
+
+Default: not set
+
 ### pool_mode
 
 Specifies when a server connection can be reused by other clients.
@@ -794,15 +884,14 @@ Default: `secure`
 ### client_tls_ciphers
 
 Allowed TLS ciphers, in OpenSSL syntax.  Shortcuts:
-
-- `default`/`secure`/`fast`/`normal` (these all use system wide OpenSSL defaults)
-- `all` (enables all ciphers, not recommended)
+`default`/`secure`, `compat`/`legacy`, `insecure`/`all`, `normal`,
+`fast`.
 
 Only connections using TLS version 1.2 and lower are affected.  There
 is currently no setting that controls the cipher choices used by TLS
 version 1.3 connections.
 
-Default: `default`
+Default: `fast`
 
 ### client_tls_ecdhcurve
 
