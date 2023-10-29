@@ -45,6 +45,7 @@ their probing order:
 | backend                    | parallel | EDNS0 (1) | /etc/hosts | SOA lookup (2) | note                                  |
 |----------------------------|----------|-----------|------------|----------------|---------------------------------------|
 | c-ares                     | yes      | yes       | yes        | yes            | IPv6+CNAME buggy in <=1.10            |
+| udns                       | yes      | yes       | no         | yes            | IPv4 only                             |
 | evdns, libevent 2.x        | yes      | no        | yes        | no             | does not check /etc/hosts updates     |
 | getaddrinfo_a, glibc 2.9+  | yes      | yes (3)   | yes        | no             | N/A on non-glibc                      |
 | getaddrinfo, libc          | no       | yes (3)   | yes        | no             | requires pthreads                     |
@@ -61,9 +62,10 @@ options at this point and don't receive much testing anymore.
 
 By default, c-ares is used if it can be found.  Its use can be forced
 with `configure --with-cares` or disabled with `--without-cares`.  If
-c-ares is not used (not found or disabled), then Libevent is used.  Specify
-`--disable-evdns` to disable the use of Libevent's evdns and fall back to a
-libc-based implementation.
+c-ares is not used (not found or disabled), then specify `--with-udns`
+to pick udns, else Libevent is used.  Specify `--disable-evdns` to
+disable the use of Libevent's evdns and fall back to a libc-based
+implementation.
 
 PAM authentication
 ------------------
@@ -71,6 +73,13 @@ PAM authentication
 To enable PAM authentication, `./configure` has a flag `--with-pam`
 (default value is no).  When compiled with PAM support, a new global
 authentication type `pam` is available to validate users through PAM.
+
+LDAP authentication
+------------------
+
+To enable LDAP authentication, `./configure` has a flag `--with-ldap`
+(default value is no).  When compiled with LDAP support, a new global
+authentication type `ldap` is available to validate users through LDAP.
 
 systemd integration
 -------------------
@@ -103,7 +112,7 @@ Testing
 
 See the [`README.md` file in the test directory][1] on how to run the tests.
 
-[1]: https://github.com/pgbouncer/pgbouncer/blob/master/test/README.md
+[1]: https://github.com/greenplum-db/pgbouncer/blob/master/test/README.md
 
 Building on Windows
 -------------------

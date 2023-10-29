@@ -20,6 +20,10 @@ task:
     # - container:
     #     image: ubuntu:20.04
     #   env:
+    #     configure_args: '--with-udns --without-openssl'
+    # - container:
+    #     image: ubuntu:20.04
+    #   env:
     #     configure_args: '--disable-evdns'
     # - container:
     #     image: ubuntu:20.04
@@ -59,12 +63,14 @@ task:
     #     PGVERSION: 11
   setup_script:
     - apt-get update
+    # - apt-get -y install git
+    # - git submodule update --init
     - apt-get -y install curl gnupg lsb-release
     - curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
     - echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main $PGVERSION" | tee /etc/apt/sources.list.d/pgdg.list
     - if [ "$PGVERSION" = 17 ]; then echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg-snapshot main 17" | tee /etc/apt/sources.list.d/pgdg.list; fi
     - apt-get update
-    - pkgs="autoconf automake ca-certificates cpio libc-ares-dev libevent-dev libssl-dev libsystemd-dev libtool make pandoc postgresql-$PGVERSION pkg-config python3 python3-pip python3-venv sudo iptables"
+    - pkgs="autoconf automake ca-certificates cpio libc-ares-dev libevent-dev libssl-dev libsystemd-dev libtool libudns-dev make pandoc postgresql-$PGVERSION pkg-config python3 python3-pip python3-venv sudo iptables"
     - case $CC in clang) pkgs="$pkgs clang";; esac
     - if [ x"$ENABLE_VALGRIND" = x"yes" ]; then pkgs="$pkgs valgrind"; fi
     - if [ x"$use_scan_build" = x"yes" ]; then pkgs="$pkgs clang-tools"; fi

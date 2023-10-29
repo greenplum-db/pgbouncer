@@ -14,6 +14,7 @@ pgbouncer_SOURCES = \
 	src/main.c \
 	src/objects.c \
 	src/pam.c \
+	src/auth_ldap.c \
 	src/pktbuf.c \
 	src/pooler.c \
 	src/proto.c \
@@ -42,6 +43,7 @@ pgbouncer_SOURCES = \
 	include/messages.h \
 	include/objects.h \
 	include/pam.h \
+	include/auth_ldap.h \
 	include/pktbuf.h \
 	include/pooler.h \
 	include/proto.h \
@@ -65,7 +67,8 @@ pgbouncer_SOURCES = \
 	include/common/uthash_lowercase.h
 
 UTHASH = uthash
-pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS)
+COMMON_CFLAGS = -g -Wall -DLDAP_DEPRECATED
+pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS) $(COMMON_CFLAGS)
 pgbouncer_CPPFLAGS += -I$(UTHASH)/src
 
 # include libusual sources directly
@@ -92,7 +95,7 @@ EXTRA_DIST = AUTHORS COPYRIGHT Makefile config.mak.in config.sub config.guess \
 	     etc/mkauth.py etc/optscan.sh etc/example.debian.init.sh \
 	     win32/Makefile \
 	     $(LIBUSUAL_DIST) \
-	     $(UTHASH_DIST) \
+	     $(UTHASH_DIST)
 
 # libusual files (FIXME: list should be provided by libusual...)
 LIBUSUAL_DIST = $(filter-out %/config.h, $(sort $(wildcard \
