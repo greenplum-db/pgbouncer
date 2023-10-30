@@ -498,7 +498,8 @@ PgUser *add_user(const char *name, const char *passwd)
 		aatree_insert(&user_tree, (uintptr_t)user->name, &user->tree_node);
 		user->pool_mode = POOL_INHERIT;
 	}
-	safe_strcpy(user->passwd, passwd, sizeof(user->passwd));
+	if (passwd != NULL)
+		safe_strcpy(user->passwd, passwd, sizeof(user->passwd));
 	return user;
 }
 
@@ -2019,6 +2020,13 @@ found:
 	 * cancelled in a many-to-one way.
 	 */
 	server = main_client->link;
+    /* ignore cancel request if the server is setting vars*/
+	if (server->setting_vars) {
+                slog_error(req, "ignore cancel request");
+		disconnect_client(req, false, "don't cancel server during setting vars");
+		return;
+	}
+
 	req->canceled_server = server;
 	statlist_append(&server->canceling_clients, &req->cancel_head);
 
