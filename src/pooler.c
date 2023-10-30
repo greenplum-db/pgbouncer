@@ -23,6 +23,8 @@
 #include "bouncer.h"
 
 #include <usual/netdb.h>
+#include <usual/safeio.h>
+#include <usual/string.h>
 
 struct ListenSocket {
 	struct List node;
@@ -46,6 +48,8 @@ static const struct addrinfo hints = {
 static bool need_active = false;
 /* is it actually active or suspended? */
 static bool pooler_active = false;
+/* is listen_addr set, we can only know this by parsing it */
+static bool listen_addr_empty = true;
 
 /* on accept() failure sleep 5 seconds */
 static struct event ev_err;
@@ -65,6 +69,9 @@ static void cleanup_sockets(void)
 
 	while ((el = statlist_pop(&sock_list)) != NULL) {
 		ls = container_of(el, struct ListenSocket, node);
+		if (event_del(&ls->ev) < 0) {
+			log_warning("cleanup_sockets, event_del: %s", strerror(errno));
+		}
 		if (ls->fd > 0) {
 			safe_close(ls->fd);
 			ls->fd = 0;
@@ -210,7 +217,7 @@ static void create_unix_socket(const char *socket_dir, int listen_port)
 	memset(&un, 0, sizeof(un));
 	un.sun_family = AF_UNIX;
 	snprintf(un.sun_path, sizeof(un.sun_path),
-		"%s/.s.PGSQL.%d", socket_dir, listen_port);
+		 "%s/.s.PGSQL.%d", socket_dir, listen_port);
 	if (socket_dir[0] == '@') {
 		/*
 		 * By convention, for abstract Unix sockets, only the
@@ -218,8 +225,7 @@ static void create_unix_socket(const char *socket_dir, int listen_port)
 		 */
 		addrlen = offsetof(struct sockaddr_un, sun_path) + strlen(un.sun_path);
 		un.sun_path[0] = '\0';
-	}
-	else {
+	} else {
 		addrlen = sizeof(un);
 	}
 
@@ -234,7 +240,19 @@ static void create_unix_socket(const char *socket_dir, int listen_port)
 		unlink(un.sun_path);
 	}
 
-	add_listen(AF_UNIX, (const struct sockaddr *)&un, addrlen);
+	/*
+	 * The user expects a socket to be created in this directory and a simple
+	 * typo might cause this to fail. So we fail hard to notify the user that
+	 * we were unable to create the socket. Not creating the socket is
+	 * especially bad when so_reuseport is used in combination with peering,
+	 * because the peer list would then contain sockets that don't exist and
+	 * forwarding cancels would wait for timeout and then fail silently.
+	 *
+	 * The exact directory is already listed in a warning created by
+	 * add_listen, so we don't show it here again.
+	 */
+	if (!add_listen(AF_UNIX, (const struct sockaddr *)&un, addrlen))
+		die("failed to create unix socket");
 }
 
 /*
@@ -243,36 +261,29 @@ static void create_unix_socket(const char *socket_dir, int listen_port)
  * optval specifies how long after connection attempt to wait for data.
  *
  * Related to tcp_synack_retries sysctl, default 5 (corresponds 180 secs).
- *
- * SO_ACCEPTFILTER needs to be set after listen(), maybe TCP_DEFER_ACCEPT too.
  */
 static void tune_accept(int sock, bool on)
 {
 	const char *act = on ? "install" : "uninstall";
 	int res = 0;
 #ifdef TCP_DEFER_ACCEPT
-	int val = 45; /* FIXME: proper value */
+	int val = 45;	/* FIXME: proper value */
 	socklen_t vlen = sizeof(val);
-	res = getsockopt(sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &val, &vlen);
-	log_noise("old TCP_DEFER_ACCEPT on %d = %d", sock, val);
+	if (getsockopt(sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &val, &vlen) == 0)
+		log_noise("old TCP_DEFER_ACCEPT on %d = %d", sock, val);
 	val = on ? 1 : 0;
 	log_noise("%s TCP_DEFER_ACCEPT on %d", act, sock);
 	res = setsockopt(sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, &val, sizeof(val));
 #else
-#if 0
-#ifdef SO_ACCEPTFILTER
-	struct accept_filter_arg af, *afp = on ? &af : NULL;
-	socklen_t af_len = on ? sizeof(af) : 0;
-	memset(&af, 0, sizeof(af));
-	strcpy(af.af_name, "dataready");
-	log_noise("%s SO_ACCEPTFILTER on %d", act, sock);
-	res = setsockopt(sock, SOL_SOCKET, SO_ACCEPTFILTER, afp, af_len);
+	if (on) {
+		errno = EINVAL;
+		res = -1;
+	}
 #endif
-#endif
-#endif
-	if (res < 0)
-		log_warning("tune_accept: %s TCP_DEFER_ACCEPT/SO_ACCEPTFILTER: %s",
+	if (res < 0) {
+		log_warning("tune_accept: %s TCP_DEFER_ACCEPT: %s",
 			    act, strerror(errno));
+	}
 }
 
 void pooler_tune_accept(bool on)
@@ -295,13 +306,13 @@ static void err_wait_func(evutil_socket_t sock, short flags, void *arg)
 static const char *addrpair(const PgAddr *src, const PgAddr *dst)
 {
 	static char ip1buf[PGADDR_BUF], ip2buf[PGADDR_BUF],
-	            buf[2*PGADDR_BUF + 16];
+		    buf[2*PGADDR_BUF + 16];
 	const char *ip1, *ip2;
 	if (pga_is_unix(src))
 		return "unix->unix";
 
 	ip1 = pga_ntop(src, ip1buf, sizeof(ip1buf));
-	ip2 = pga_ntop(src, ip2buf, sizeof(ip2buf));
+	ip2 = pga_ntop(dst, ip2buf, sizeof(ip2buf));
 	snprintf(buf, sizeof(buf), "%s:%d -> %s:%d",
 		 ip1, pga_port(src), ip2, pga_port(dst));
 	return buf;
@@ -331,7 +342,7 @@ static void pool_accept(evutil_socket_t sock, short flags, void *arg)
 	socklen_t len = sizeof(raddr);
 	bool is_unix = pga_is_unix(&ls->addr);
 
-	if(!(flags & EV_READ)) {
+	if (!(flags & EV_READ)) {
 		log_warning("no EV_READ in pool_accept");
 		return;
 	}
@@ -456,10 +467,12 @@ static bool parse_addr(void *arg, const char *addr)
 	int res;
 	char service[64];
 	struct addrinfo *ai, *gaires = NULL;
-	bool ok;
 
 	if (!*addr)
 		return true;
+
+	listen_addr_empty = false;
+
 	if (strcmp(addr, "*") == 0)
 		addr = NULL;
 	snprintf(service, sizeof(service), "%d", cf_listen_port);
@@ -467,14 +480,19 @@ static bool parse_addr(void *arg, const char *addr)
 	res = getaddrinfo(addr, service, &hints, &gaires);
 	if (res != 0) {
 		die("getaddrinfo('%s', '%d') = %s [%d]", addr ? addr : "*",
-		      cf_listen_port, gai_strerror(res), res);
+		    cf_listen_port, gai_strerror(res), res);
 	}
 
 	for (ai = gaires; ai; ai = ai->ai_next) {
-		ok = add_listen(ai->ai_family, ai->ai_addr, ai->ai_addrlen);
-		/* it's unclear whether all or only first result should be used */
-		if (0 && ok)
-			break;
+		/*
+		 * add_listen() will log a warning if there is a
+		 * problem.  We don't use the return value to fail the
+		 * whole thing, because that might lead to problems in
+		 * practice with overlapping host names or address
+		 * families and other weird stuff. If no address at all
+		 * can be listened on though, we do fail hard later.
+		 */
+		add_listen(ai->ai_family, ai->ai_addr, ai->ai_addrlen);
 	}
 
 	freeaddrinfo(gaires);
@@ -536,6 +554,9 @@ void pooler_setup(void)
 		ok = parse_word_list(cf_listen_addr, parse_addr, NULL);
 		if (!ok)
 			die("failed to parse listen_addr list: %s", cf_listen_addr);
+
+		if (!listen_addr_empty && !statlist_count(&sock_list))
+			die("failed to listen on any address in listen_addr list: %s", cf_listen_addr);
 
 		if (cf_unix_socket_dir && *cf_unix_socket_dir)
 			create_unix_socket(cf_unix_socket_dir, cf_listen_port);

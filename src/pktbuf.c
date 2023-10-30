@@ -33,17 +33,29 @@
 #define NUMERICOID 1700
 
 
-void pktbuf_free(PktBuf *buf)
+static void pktbuf_free_internal(PktBuf *buf)
 {
 	if (!buf || buf->fixed_buf)
 		return;
 
 	log_debug("pktbuf_free(%p)", buf);
-	if (buf->buf)
-		free(buf->buf);
-	if (buf->ev)
-		free(buf->ev);
+	free(buf->buf);
+	free(buf->ev);
 	free(buf);
+}
+
+static PktBuf *temp_pktbuf;
+
+/*
+ * free the given buffer, if it's a dynamic buffer and not the global temp
+ * buffer
+ */
+void pktbuf_free(PktBuf *buf)
+{
+	if (buf == temp_pktbuf)
+		return;
+
+	pktbuf_free_internal(buf);
 }
 
 PktBuf *pktbuf_dynamic(int start_len)
@@ -84,8 +96,6 @@ void pktbuf_static(PktBuf *buf, uint8_t *data, int len)
 	buf->fixed_buf = true;
 }
 
-static PktBuf *temp_pktbuf;
-
 struct PktBuf *pktbuf_temp(void)
 {
 	if (!temp_pktbuf)
@@ -98,7 +108,7 @@ struct PktBuf *pktbuf_temp(void)
 
 void pktbuf_cleanup(void)
 {
-	pktbuf_free(temp_pktbuf);
+	pktbuf_free_internal(temp_pktbuf);
 	temp_pktbuf = NULL;
 }
 
@@ -160,7 +170,7 @@ bool pktbuf_send_queued(PktBuf *buf, PgSocket *sk)
 
 	if (buf->failed) {
 		pktbuf_free(buf);
-		return send_pooler_error(sk, true, false, "result prepare failed");
+		return send_pooler_error(sk, true, NULL, false, "result prepare failed");
 	} else {
 		buf->sending = true;
 		buf->queued_dst = sk;
@@ -450,8 +460,7 @@ void pktbuf_write_DataRow(PktBuf *buf, const char *tupdesc, ...)
 				for (int j = 0; j < blen; j++)
 					sprintf(tmp + (2 + j * 2), "%02x", bval[j]);
 				val = tmp;
-			}
-			else {
+			} else {
 				(void) va_arg(ap, uint8_t *);
 				val = NULL;
 			}

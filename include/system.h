@@ -23,10 +23,6 @@
 #include <usual/base.h>
 #include <usual/ctype.h>
 
-#ifdef WIN32
-#include "win32support.h"
-#endif
-
 #include <sys/stat.h>
 
 #include <stdarg.h>
@@ -46,7 +42,10 @@
  */
 
 #ifndef HAVE_LSTAT
-static inline int lstat(const char *path, struct stat *st) { return stat(path, st); }
+static inline int lstat(const char *path, struct stat *st)
+{
+	return stat(path, st);
+}
 #endif
 
 bool check_unix_peer_name(int fd, const char *username);
