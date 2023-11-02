@@ -17,4 +17,3 @@ uidNumber: 101
 gidNumber: 100
 homeDirectory: /home/ldapuser1
 mail: ldapuser1@example.net
-

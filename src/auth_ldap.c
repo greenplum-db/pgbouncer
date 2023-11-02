@@ -584,7 +584,7 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
 
     int depass_length = -1;
     int debase64_length = -1;
-    char debase64_encrypt[1024] = {0};
+    char debase64_encrypt[MAX_PASSWORD] = {0};
 
     unsigned char salt[8] = {0};
     bool salt_flag = false;
@@ -621,6 +621,7 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     else
         depass_length = decrypt_input(debase64_encrypt, debase64_length, cipher, password, key, iv);
 
+    password[depass_length] = '\0';
     return depass_length;
 }
 /*
@@ -694,7 +695,7 @@ checkldapauth(struct ldap_auth_request *request)
 		 * If the password of LDAP authentication is encrypted (ldap_password == "$bindpasswd"),
 		 * then decrypt it, replace the variable and continue using the real password.
 		 */
-		if (ldap_password != NULL && strcmp(ldap_password, "$bindpasswd") == 0)
+        if (ldap_password != NULL && strcmp(ldap_password, "$bindpasswd") == 0)
         {
             int result = 0;
             char* ldap_key = NULL;

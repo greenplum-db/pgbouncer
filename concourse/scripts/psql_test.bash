@@ -40,7 +40,10 @@ function setup_gpdb_cluster() {
 function install_openldap() {
     local os=""
     if [ -f /etc/redhat-release ];then
-          os="centos"
+        os="centos"
+    fi
+    if [[ $TARGET_OS == "ubuntu"* ]];then
+        os="debian"
     fi
     if [ $TARGET_OS = "rocky8" ];then
         dnf update -y
@@ -48,6 +51,8 @@ function install_openldap() {
         dnf install symas-openldap-clients symas-openldap-servers -y
     elif [ x$os == "xcentos" ];then
         yum install -y openldap-servers openldap-clients
+    elif [ x$os == "xdebian" ];then
+        apt install -y slapd ldap-utils libldap2-dev
     else
         echo "Platform not support"
     fi
