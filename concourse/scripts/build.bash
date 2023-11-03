@@ -3,6 +3,21 @@
 set -ex
 export HOME_DIR=$PWD
 
+function install_dependencies() {
+    sudo dnf install pandoc
+    case "$TARGET_OS" in
+    ubuntu*|debian*)
+        sudo apt-get install pandoc
+        ;;
+    centos*|rhel8|oel8|rocky8)
+        sudo dnf install pandoc
+        ;;
+    *)
+        echo Unknown TARGET_OS
+        ;;
+    esac
+}
+
 function build_pgbouncer() {
     pushd pgbouncer_src
     git submodule init
@@ -12,6 +27,7 @@ function build_pgbouncer() {
     make install
     popd
 }
+
 function build_hba_test() {
     pushd pgbouncer_src/test
     make all
@@ -53,6 +69,7 @@ function build_tar_for_release() {
 }
 
 function _main() {
+    install_dependencies
     build_pgbouncer
     build_tar_for_release
     build_hba_test

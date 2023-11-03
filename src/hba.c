@@ -274,12 +274,14 @@ static bool eat(struct TokParser *p, enum TokType ttype)
 	}
 	return false;
 }
+
 #ifdef HAVE_LDAP
 static void eat_all(struct TokParser *p)
 {
 	p->cur_tok = TOK_EOL;
 }
 #endif
+
 static bool eat_kw(struct TokParser *p, const char *kw)
 {
 	if (p->cur_tok == TOK_IDENT && strcmp(kw, p->cur_tok_str) == 0) {
