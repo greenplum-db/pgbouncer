@@ -504,18 +504,28 @@ int decrypt_input(const char *in, int length, const char *cipher, char *out, uns
     EVP_CIPHER_CTX *ctx = NULL;
     const EVP_CIPHER *evp_cipher = NULL;
 
-    ctx = EVP_CIPHER_CTX_new();
     evp_cipher = EVP_get_cipherbyname(cipher);
     if (!evp_cipher) {
-        log_error("No such cipher: %s", cipher);
+        log_error("no such cipher: %s", cipher);
         return -1;
     }
 
-    EVP_CipherInit_ex(ctx, evp_cipher, NULL, key, iv, 0);
-    EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, length);
+    ctx = EVP_CIPHER_CTX_new();
+    if (EVP_CipherInit_ex(ctx, evp_cipher, NULL, key, iv, 0) != 1)
+        goto fail;
+    if (EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, length) != 1)
+        goto fail;
+
     declen = outlen;
-    EVP_CipherFinal(ctx, (unsigned char *)out + outlen, &outlen);
+    if (EVP_CipherFinal(ctx, (unsigned char *)out + outlen, &outlen) != 1)
+        goto fail;
+
     declen += outlen;
     EVP_CIPHER_CTX_free(ctx);
+
     return declen;
+fail:
+    EVP_CIPHER_CTX_free(ctx);
+    log_error("input data could not be decrypted");
+    return -1;
 }

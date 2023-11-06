@@ -609,19 +609,20 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     {
         if (generate_key_iv(key_txt, salt, cipher, "sha256", key, iv) == 0)
             return -1;
+
+        depass_length = decrypt_input(debase64_encrypt + 16, debase64_length - 16, cipher, password, key, iv);
     }
     else
     {
         if (generate_key_iv(key_txt, NULL, cipher, "sha256", key, iv) == 0)
             return -1;
+
+        depass_length = decrypt_input(debase64_encrypt, debase64_length, cipher, password, key, iv);
     }
 
-    if (salt_flag)
-        depass_length = decrypt_input(debase64_encrypt + 16, debase64_length - 16, cipher, password, key, iv);
-    else
-        depass_length = decrypt_input(debase64_encrypt, debase64_length, cipher, password, key, iv);
+    if (depass_length >= 0)
+        password[depass_length] = '\0';
 
-    password[depass_length] = '\0';
     return depass_length;
 }
 /*
@@ -720,6 +721,7 @@ checkldapauth(struct ldap_auth_request *request)
             ldap_password = load_file(ldapbindpass_filepath, NULL);
             if (ldap_password == NULL)
             {
+                free(ldap_key);
                 log_error("Failed to load encrypted LDAP password file \"%s\": %s", ldapbindpass_filepath, strerror(errno));
                 return false;
             }
