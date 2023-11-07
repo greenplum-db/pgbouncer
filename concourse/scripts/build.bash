@@ -24,9 +24,6 @@ function install_dependencies() {
         ubuntu*|debian*)
             apt update
             apt install -y pandoc
-            library_path=$(ldconfig -p | grep libreadline.so.8)
-            readline_path=$(echo "$library_path" | awk '{print $4}')
-            ln -s $readline_path /usr/lib/libreadline.so.7
             ;;
         *)
             echo Unknown system: $TARGET_OS

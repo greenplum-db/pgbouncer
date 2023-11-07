@@ -22,6 +22,28 @@ function init_os() {
     esac
 }
 
+function install_dependencies() {
+    case "$TARGET_OS" in
+        "")
+            echo TARGET_OS is undefined
+            ;;
+        centos*|photon*)
+            ;;
+        rhel8|oel8|rocky8)
+            ;;
+        sles*)
+            ;;
+        ubuntu*|debian*)
+            library_path=$(ldconfig -p | grep libreadline.so.8)
+            readline_path=$(echo "$library_path" | awk '{print $4}')
+            ln -s $readline_path /usr/lib/libreadline.so.7
+            ;;
+        *)
+            echo Unknown system: $TARGET_OS
+            ;;
+    esac
+}
+
 function setup_gpdb_cluster() {
     init_os
     export CONFIGURE_FLAGS=" --with-openssl --with-ldap"
@@ -37,6 +59,7 @@ function setup_gpdb_cluster() {
     . /usr/local/greenplum-db-devel/greenplum_path.sh
     . gpdb_src/gpAux/gpdemo/gpdemo-env.sh
 }
+
 function install_openldap() {
     local os=""
     if [ -f /etc/redhat-release ];then
@@ -54,6 +77,7 @@ function install_openldap() {
 }
 
 function _main(){
+    install_dependencies
     install_openldap
     setup_gpdb_cluster
     chown -R gpadmin:gpadmin pgbouncer_src
