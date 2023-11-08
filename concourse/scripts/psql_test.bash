@@ -36,7 +36,9 @@ function install_dependencies() {
         ubuntu*|debian*)
             library_path=$(ldconfig -p | grep libreadline.so.8)
             readline_path=$(echo "$library_path" | awk '{print $4}')
-            ln -s $readline_path /usr/lib/libreadline.so.7
+            if [ -e /usr/lib/libreadline.so.7 ]; then
+                ln -s $readline_path /usr/lib/libreadline.so.7
+            fi
             ;;
         *)
             echo Unknown system: $TARGET_OS
