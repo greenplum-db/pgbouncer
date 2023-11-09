@@ -23,7 +23,7 @@ function install_dependencies() {
             echo TARGET_OS is undefined
             ;;
         centos*|photon*)
-            yum update
+            yum update -y
             yum install -y pandoc
             ;;
         rhel8|oel8|rocky8)
@@ -33,11 +33,11 @@ function install_dependencies() {
             dnf_nstall_pandoc
             ;;
         sles*)
-            zypper update
+            zypper update -y
             zypper install -y pandoc
             ;;
         ubuntu*|debian*)
-            apt update
+            apt update -y
             apt install -y pandoc
             ;;
         *)
