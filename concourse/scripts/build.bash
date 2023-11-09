@@ -3,6 +3,14 @@
 set -ex
 export HOME_DIR=$PWD
 
+function dnf_nstall_pandoc() {
+    PANDOC_VERSION=$(curl -s https://api.github.com/repos/jgm/pandoc/releases/latest | grep "tag_name" | cut -d'"' -f4)
+    wget "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1.el8.x86_64.rpm"
+    dnf install -y "pandoc-${PANDOC_VERSION}-1.el8.x86_64.rpm"
+    rm "pandoc-${PANDOC_VERSION}-1.el8.x86_64.rpm"
+    echo "Pandoc ${PANDOC_VERSION} has been installed."
+}
+
 function install_dependencies() {
     case "$TARGET_OS" in
         "")
@@ -15,7 +23,8 @@ function install_dependencies() {
         rhel8|oel8|rocky8)
             dnf update -y
             dnf install -y epel-release
-            dnf install -y pandoc
+            # dnf install -y pandoc
+            dnf_nstall_pandoc
             ;;
         sles*)
             zypper update
