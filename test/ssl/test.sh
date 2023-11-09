@@ -11,7 +11,7 @@ fi
 # PG_PORT is gpdb master server port and PGPORT will be set us pgboucer server port
 PG_PORT=${PGPORT}
 
-( ./create_certs.sh ) > /dev/null
+( sh ./create_certs.sh ) > /dev/null
 #export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH
 #export PATH=/usr/local/pgsql/bin:$PATH
 export PGDATA=$MASTER_DATA_DIRECTORY
@@ -26,7 +26,7 @@ mkdir -p tmp
 BOUNCER_LOG=test.log
 BOUNCER_INI=test.ini
 BOUNCER_PID=test.pid
-BOUNCER_PORT=`sed -n '/^listen_port/s/listen_port.*=[^0-9]*//p' $BOUNCER_INI`
+BOUNCER_PORT=$(sed -n '/^listen_port/s/listen_port.*=[^0-9]*//p' $BOUNCER_INI)
 BOUNCER_EXE="$BOUNCER_EXE_PREFIX ../../pgbouncer"
 
 LOGDIR=log
