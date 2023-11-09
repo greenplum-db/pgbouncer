@@ -114,8 +114,10 @@ if ! $use_unix_sockets; then
 	echo 'admin_users = pgbouncer' >> test.ini
 fi
 
+# https://github.com/greenplum-db/pgbouncer/blob/825e92475ba37f11874cc5b84e1c92f3d5faa661/test/utils.py#L124
 MAX_PASSWORD=$(sed -n $SED_ERE_OP 's/#define MAX_PASSWORD[[:space:]]+([0-9]+)/\1/p' ../include/bouncer.h)
-long_password=$(printf '%*s' $(($MAX_PASSWORD - 1)) | tr ' ' 'a')
+MAX_PASSWORD=$(($MAX_PASSWORD > 996 && $pg_majorversion < 14 ? 996 : MAX_PASSWORD))
+long_password=$(printf '%*s' $MAX_PASSWORD | tr ' ' 'a')
 
 # System configuration checks
 if ! grep -q "^\"${USER:=$(id -un)}\"" userlist.txt; then
