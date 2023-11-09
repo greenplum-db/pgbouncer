@@ -5,10 +5,16 @@ export HOME_DIR=$PWD
 
 function dnf_nstall_pandoc() {
     PANDOC_VERSION=$(curl -s https://api.github.com/repos/jgm/pandoc/releases/latest | grep "tag_name" | cut -d'"' -f4)
-    wget "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1.el8.x86_64.rpm"
-    dnf install -y "pandoc-${PANDOC_VERSION}-1.el8.x86_64.rpm"
-    rm "pandoc-${PANDOC_VERSION}-1.el8.x86_64.rpm"
+    wget "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz"
+
+    tar xvzf pandoc-$PANDOC_VERSION-linux-amd64.tar.gz
+    mv pandoc-$PANDOC_VERSION/bin/* /usr/local/bin/
+
+    # Clean up the downloaded and extracted packages
+    rm -rf pandoc-$PANDOC_VERSION pandoc-$PANDOC_VERSION-linux-amd64.tar.gz
+
     echo "Pandoc ${PANDOC_VERSION} has been installed."
+    pandoc --version
 }
 
 function install_dependencies() {
