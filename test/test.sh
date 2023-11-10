@@ -215,12 +215,13 @@ rm -f $BOUNCER_LOG
 if $use_unix_sockets; then
 	sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" ${PGDATA}/postgresql.conf
 fi
+local=$(($use_unix_sockets ? 'local' : '#local'))
 cat >>${PGDATA}/postgresql.conf <<-EOF
 log_connections = on
 EOF
 if $pg_supports_scram; then
 	cat >${PGDATA}/pg_hba.conf <<-EOF
-	local  p6   all                scram-sha-256
+	$local  p6   all                scram-sha-256
 	host   p6   all  127.0.0.1/32  scram-sha-256
 	host   p6   all  ::1/128       scram-sha-256
 	EOF
@@ -228,13 +229,13 @@ else
 	cat >${PGDATA}/pg_hba.conf </dev/null
 fi
 cat >>${PGDATA}/pg_hba.conf <<-EOF
-local  p4   all                password
+$local  p4   all                password
 host   p4   all  127.0.0.1/32  password
 host   p4   all  ::1/128       password
-local  p5   all                md5
+$local  p5   all                md5
 host   p5   all  127.0.0.1/32  md5
 host   p5   all  ::1/128       md5
-local  all  all                trust
+$local  all  all                trust
 host   all  all  127.0.0.1/32  trust
 host   all  all  ::1/128       trust
 EOF
