@@ -215,10 +215,15 @@ rm -f $BOUNCER_LOG
 if $use_unix_sockets; then
 	sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" ${PGDATA}/postgresql.conf
 fi
-local=$(($use_unix_sockets ? 'local' : '#local'))
+# We need to make the log go to stderr so that the tests can
+# check what is being logged.  This should be the default, but
+# some packagings change the default configuration.
 cat >>${PGDATA}/postgresql.conf <<-EOF
+logging_collector = off
+log_destination = stderr
 log_connections = on
 EOF
+local=$(($use_unix_sockets ? 'local' : '#local'))
 if $pg_supports_scram; then
 	cat >${PGDATA}/pg_hba.conf <<-EOF
 	$local  p6   all                scram-sha-256
