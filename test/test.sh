@@ -1638,8 +1638,8 @@ test_host_list() {
 	psql -X -d hostlist1 -c 'select 1'
 	psql -X -d hostlist1 -c 'select 2'
 
-	grep -F 'hostlist1/bouncer@127.0.0.1:6666 new connection to server' $BOUNCER_LOG || return 1
-	grep -F 'hostlist1/bouncer@[::1]:6666 new connection to server' $BOUNCER_LOG || return 1
+	grep -F "hostlist1/bouncer@127.0.0.1:${PG_PORT} new connection to server" $BOUNCER_LOG || return 1
+	grep -F "hostlist1/bouncer@[::1]:${PG_PORT} new connection to server" $BOUNCER_LOG || return 1
 	return 0
 }
 
@@ -1653,7 +1653,7 @@ test_host_list_dummy() {
 	psql -X -d hostlist2 -c 'select 1'
 	psql -X -d hostlist2 -c 'select 2'
 
-	grep -F 'hostlist2/bouncer@127.0.0.1:6666 new connection to server' $BOUNCER_LOG || return 1
+	grep -F "hostlist2/bouncer@127.0.0.1:${PG_PORT} new connection to server" $BOUNCER_LOG || return 1
 	return 0
 }
 
