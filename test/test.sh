@@ -223,7 +223,11 @@ logging_collector = off
 log_destination = stderr
 log_connections = on
 EOF
-local=$(($use_unix_sockets ? 'local' : '#local'))
+if $use_unix_sockets; then
+    local='local'
+else
+    local='#local'
+fi
 if $pg_supports_scram; then
 	cat >${PGDATA}/pg_hba.conf <<-EOF
 	$local  p6   all                scram-sha-256
