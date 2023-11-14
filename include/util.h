@@ -53,6 +53,10 @@ void fill_local_addr(PgSocket *sk, int fd, bool is_unix);
 void rescue_timers(void);
 void safe_evtimer_add(struct event *ev, struct timeval *tv);
 
+int generate_key_iv(const char *password, const unsigned char *salt, const char *cipher, const char *digest,
+                    unsigned char *key, unsigned char *iv);
+int decrypt_input(const char *in, int length, const char *cipher, char *out, unsigned char *key, unsigned char *iv);
+
 /* log truncated strings */
 #define safe_strcpy(dst, src, dstlen) do { \
 	size_t needed = strlcpy(dst, src, dstlen); \

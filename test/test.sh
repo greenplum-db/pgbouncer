@@ -1379,6 +1379,7 @@ test_ldap_authentication() {
 	slapd_pidfile="${ldap_pwd}/slapd.pid"
 	slapd_logfile="${ldap_pwd}/slapd.log"
 	ldap_conf="${ldap_pwd}/ldap.conf"
+	ldap_keyfile="auth_key"
 	ldap_server='localhost'
 	ldap_port=49152
 	ldap_url="ldap://$ldap_server:$ldap_port"
@@ -1447,7 +1448,35 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#3 test "multiple servers"
+	#3 test "encrypted password"
+	ldap_binddn='uid=ldapuser1,dc=example,dc=net'
+	ldap_bindpass='secret1'
+	#3.1 with default('-aes-256-cbc') cipher
+	openssl rand -base64 256 | tr -d '\n' >$ldap_keyfile
+	encrypted_passwd=$(echo -n "$ldap_bindpass" | openssl enc -aes-256-cbc -base64 -md sha256 -pass file:${ldap_keyfile})
+	echo -n $encrypted_passwd > "${HOME}/.ldapbindpass"
+cat >hba.conf<<EOF
+host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapbindpasswd="\$bindpasswd" ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapbinddn="$ldap_binddn"
+EOF
+	echo 'auth_type = hba' >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	#3.2 with various cipher
+	cipher='-aes-128-ecb'
+	encrypted_passwd=$(echo -n "$ldap_bindpass" | openssl enc $cipher -base64 -md sha256 -pass file:${ldap_keyfile})
+	echo -n $encrypted_passwd > "${HOME}/.ldapbindpass"
+	echo "auth_cipher = ${cipher:1}" >> test.ini
+	admin "reload" && sleep 1
+	PGPASSWORD=secret1 psql -X -d p0 -U ldapuser1 -c "select 1"
+	if [ $? -ne 0 ] ;then
+		re=1
+	fi
+	sed -i '$d' test.ini
+	rm -f $ldap_keyfile "${HOME}/.ldapbindpass"
+	#4 test "multiple servers"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver="$ldap_server $ldap_server" ldapport=$ldap_port ldapbasedn="$ldap_basedn"
 EOF
@@ -1457,7 +1486,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#4 test "LDAP URLs"
+	#5 test "LDAP URLs"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapurl="$ldap_url/$ldap_basedn?uid?sub"
 EOF
@@ -1467,7 +1496,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#5 test "search filters"
+	#6 test "search filters"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapserver=$ldap_server ldapport=$ldap_port ldapbasedn="$ldap_basedn" ldapsearchfilter="uid=\$username"
 EOF
@@ -1477,7 +1506,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	# switch auth type from ldap to md5
+	#7 switch auth type from ldap to md5
 	touch userlist.txt # refresh timestamp to change the password of user ldapuser1
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 md5
@@ -1488,7 +1517,7 @@ EOF
 	if [ $? -ne 0 ] ;then
 		re=1
 	fi
-	#6 test "search filters in LDAP URLs"
+	#8 test "search filters in LDAP URLs"
 cat >hba.conf<<EOF
 host all ldapuser1 0.0.0.0/0 ldap ldapurl="$ldap_url/$ldap_basedn??sub?(|(uid=\$username)(mail=\$username))"
 EOF
