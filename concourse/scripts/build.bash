@@ -73,6 +73,9 @@ function init_platform() {
         rhel8|oel8|rocky8) # Use one package for three platform
             export platform=el8
             ;;
+        ubuntu*)
+            export platform=debian
+            ;;
         *)
             export platform=$TARGET_OS
             ;;

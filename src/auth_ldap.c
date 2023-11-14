@@ -21,11 +21,15 @@
  */
 
 #include "bouncer.h"
+#include "util.h"
 
 #ifdef HAVE_LDAP
+#include "common/base64.h"
 
-#include <pthread.h>
 #include <ldap.h>
+#include <pthread.h>
+#include <openssl/evp.h>
+#include <usual/fileutil.h>
 
 /* The request is waiting in the queue or being authenticated */
 #define LDAP_STATUS_IN_PROGRESS  1
@@ -123,6 +127,7 @@ static bool is_valid_socket(const struct ldap_auth_request *request);
 
 static void ldap_auth_finish(struct ldap_auth_request *request);
 
+int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* password);
 static bool checkldapauth(struct ldap_auth_request *request);
 
 /*
@@ -568,6 +573,59 @@ formatsearchfilter(char *filter, int length, const char *pattern, const char *us
 	filter[cur_len] = '\0';
 }
 /*
+ * LDAP password decryption
+ */
+int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* password)
+{
+    const char *cipher = cf_auth_cipher ? cf_auth_cipher: "aes-256-cbc";
+
+    unsigned char key[EVP_MAX_KEY_LENGTH] = {0};
+    unsigned char iv[EVP_MAX_IV_LENGTH] = {0};
+
+    int depass_length = -1;
+    int debase64_length = -1;
+    char debase64_encrypt[MAX_PASSWORD] = {0};
+
+    unsigned char salt[8] = {0};
+    bool salt_flag = false;
+
+    /* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
+    debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt);
+    if (debase64_length < 0)
+    {
+        log_error("The password was incorrectly encoded or was not encoded in base64");
+        return -1;
+    }
+
+    /* Check if Salted__ is used */
+    if (strncmp(debase64_encrypt, "Salted__", 8) == 0)
+    {
+        salt_flag = true;
+        memcpy(salt, debase64_encrypt + 8, 8);
+    }
+
+    /* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
+    if (salt_flag)
+    {
+        if (generate_key_iv(key_txt, salt, cipher, "sha256", key, iv) == 0)
+            return -1;
+
+        depass_length = decrypt_input(debase64_encrypt + 16, debase64_length - 16, cipher, password, key, iv);
+    }
+    else
+    {
+        if (generate_key_iv(key_txt, NULL, cipher, "sha256", key, iv) == 0)
+            return -1;
+
+        depass_length = decrypt_input(debase64_encrypt, debase64_length, cipher, password, key, iv);
+    }
+
+    if (depass_length >= 0)
+        password[depass_length] = '\0';
+
+    return depass_length;
+}
+/*
  * Perform LDAP authentication
  */
 static bool
@@ -610,6 +668,8 @@ checkldapauth(struct ldap_auth_request *request)
 		char filter[LDAP_LONG_LENGTH];
 		LDAPMessage *search_message;
 		LDAPMessage *entry;
+		char decrypted_password[MAX_PASSWORD] = {0};
+		char *ldap_password = request->ldapbindpasswd;
 		char *attributes[2] = {LDAP_NO_ATTRS, NULL};
 		char *dn;
 		char *c;
@@ -633,12 +693,52 @@ checkldapauth(struct ldap_auth_request *request)
 		}
 
 		/*
+		 * If the password of LDAP authentication is encrypted (ldap_password == "$bindpasswd"),
+		 * then decrypt it, replace the variable and continue using the real password.
+		 */
+        if (ldap_password != NULL && strcmp(ldap_password, "$bindpasswd") == 0)
+        {
+            int result = 0;
+            char* ldap_key = NULL;
+            char *home_dir = getenv("HOME");
+            char ldapbindpass_filepath[NAME_MAX] = {0};
+
+            if (cf_auth_key_file == NULL)
+            {
+                log_error("The authentication key file was not presented");
+                return false;
+            }
+
+            ldap_key = load_file(cf_auth_key_file, NULL);
+            if (ldap_key == NULL)
+            {
+                log_error("Failed to load authentication key file \"%s\": %s", cf_auth_key_file, strerror(errno));
+                return false;
+            }
+
+            strcpy(ldapbindpass_filepath, home_dir);
+            strcat(ldapbindpass_filepath, "/.ldapbindpass");
+            ldap_password = load_file(ldapbindpass_filepath, NULL);
+            if (ldap_password == NULL)
+            {
+                log_error("Failed to load encrypted LDAP password file \"%s\": %s", ldapbindpass_filepath, strerror(errno));
+                return false;
+            }
+
+            result = decrypt_ldap_password(ldap_password, ldap_key, decrypted_password);
+
+            free(ldap_key);
+            free(ldap_password);
+            ldap_password = (result >= 0) ? decrypted_password : NULL;
+        }
+
+		/*
 		 * Bind with a pre-defined username/password (if available) for
 		 * searching. If none is specified, this turns into an anonymous bind.
 		 */
 		r = ldap_simple_bind_s(ldap,
 							   request->ldapbinddn ? request->ldapbinddn : "",
-							   request->ldapbindpasswd ? request->ldapbindpasswd : "");
+							   ldap_password ? ldap_password : "");
 		if (r != LDAP_SUCCESS) {
 			log_warning("could not perform initial LDAP bind for ldapbinddn \"%s\" on server \"%s\": %s",
 						request->ldapbinddn ? request->ldapbinddn : "",
