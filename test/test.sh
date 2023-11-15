@@ -53,7 +53,7 @@ reconf_pgsql() {
 	for ln in "$@"; do
 		echo "$ln" >> ${PGDATA}/postgresql.conf
 	done
-	gpstop  -u
+	gpstop -u
 }
 
 # not used
