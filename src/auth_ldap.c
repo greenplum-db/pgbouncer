@@ -590,7 +590,7 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
     bool salt_flag = false;
 
     /* We have to ensure that the content of the password is base64 encoded without any '\n' or space inside */
-    debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt);
+    debase64_length = pg_b64_decode(encrypt_txt, strlen(encrypt_txt), debase64_encrypt, MAX_PASSWORD);
     if (debase64_length < 0)
     {
         log_error("The password was incorrectly encoded or was not encoded in base64");
@@ -721,6 +721,7 @@ checkldapauth(struct ldap_auth_request *request)
             ldap_password = load_file(ldapbindpass_filepath, NULL);
             if (ldap_password == NULL)
             {
+                free(ldap_key);
                 log_error("Failed to load encrypted LDAP password file \"%s\": %s", ldapbindpass_filepath, strerror(errno));
                 return false;
             }
