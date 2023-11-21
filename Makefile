@@ -5,6 +5,7 @@ bin_PROGRAMS = pgbouncer
 
 pgbouncer_SOURCES = \
 	src/admin.c \
+	src/auth_ldap.c \
 	src/client.c \
 	src/dnslookup.c \
 	src/hba.c \
@@ -14,7 +15,6 @@ pgbouncer_SOURCES = \
 	src/main.c \
 	src/objects.c \
 	src/pam.c \
-	src/auth_ldap.c \
 	src/pktbuf.c \
 	src/pooler.c \
 	src/proto.c \
@@ -33,6 +33,7 @@ pgbouncer_SOURCES = \
 	src/common/unicode_norm.c \
 	src/common/wchar.c \
 	include/admin.h \
+	include/auth_ldap.h \
 	include/bouncer.h \
 	include/client.h \
 	include/dnslookup.h \
@@ -43,7 +44,6 @@ pgbouncer_SOURCES = \
 	include/messages.h \
 	include/objects.h \
 	include/pam.h \
-	include/auth_ldap.h \
 	include/pktbuf.h \
 	include/pooler.h \
 	include/proto.h \
