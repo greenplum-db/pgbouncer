@@ -110,7 +110,7 @@ Testing
 
 See the [`README.md` file in the test directory][1] on how to run the tests.
 
-[1]: https://github.com/pgbouncer/pgbouncer/blob/master/test/README.md
+[1]: https://github.com/greenplum-db/pgbouncer/blob/master/test/README.md
 
 Building on Windows
 -------------------

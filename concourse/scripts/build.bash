@@ -3,6 +3,49 @@
 set -ex
 export HOME_DIR=$PWD
 
+function dnf_nstall_pandoc() {
+    PANDOC_VERSION=$(curl -s https://api.github.com/repos/jgm/pandoc/releases/latest | grep "tag_name" | cut -d'"' -f4)
+    wget "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz"
+
+    tar xvzf pandoc-$PANDOC_VERSION-linux-amd64.tar.gz
+    mv pandoc-$PANDOC_VERSION/bin/* /usr/local/bin/
+
+    # Clean up the downloaded and extracted packages
+    rm -rf pandoc-$PANDOC_VERSION pandoc-$PANDOC_VERSION-linux-amd64.tar.gz
+
+    echo "Pandoc ${PANDOC_VERSION} has been installed."
+    pandoc --version
+}
+
+function install_dependencies() {
+    case "$TARGET_OS" in
+        "")
+            echo TARGET_OS is undefined
+            ;;
+        centos*|photon*)
+            yum update -y
+            yum install -y pandoc
+            ;;
+        rhel8|oel8|rocky8)
+            dnf update -y
+            dnf install -y epel-release
+            # dnf install -y pandoc
+            dnf_nstall_pandoc
+            ;;
+        sles*)
+            zypper update -y
+            zypper install -y pandoc
+            ;;
+        ubuntu*|debian*)
+            apt update -y
+            apt install -y pandoc
+            ;;
+        *)
+            echo Unknown system: $TARGET_OS
+            ;;
+    esac
+}
+
 function build_pgbouncer() {
     pushd pgbouncer_src
     git submodule init
@@ -12,6 +55,7 @@ function build_pgbouncer() {
     make install
     popd
 }
+
 function build_hba_test() {
     pushd pgbouncer_src/test
     make all
@@ -56,6 +100,7 @@ function build_tar_for_release() {
 }
 
 function _main() {
+    install_dependencies
     build_pgbouncer
     build_tar_for_release
     build_hba_test

@@ -302,9 +302,8 @@ static bool finish_set_pool(PgSocket *client, bool takeover)
 		auth = hba_eval(parsed_hba, &client->remote_addr, !!client->sbuf.tls,
 						client->db->name, client->login_user->name, &ldap_content);
 		if (auth == AUTH_LDAP) {
-			if (ldap_content) {
+			if (ldap_content)
 				snprintf(client->ldap_parameters, MAX_LDAP_CONFIG, "%s", ldap_content);
-			}
 		}
 #endif
 	}

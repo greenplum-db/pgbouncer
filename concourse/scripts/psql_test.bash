@@ -22,6 +22,30 @@ function init_os() {
     esac
 }
 
+function install_dependencies() {
+    case "$TARGET_OS" in
+        "")
+            echo TARGET_OS is undefined
+            ;;
+        centos*|photon*)
+            ;;
+        rhel8|oel8|rocky8)
+            ;;
+        sles*)
+            ;;
+        ubuntu*|debian*)
+            library_path=$(ldconfig -p | grep libreadline.so.8)
+            readline_path=$(echo "$library_path" | awk '{print $4}')
+            if [ ! -e /usr/lib/libreadline.so.7 ]; then
+                ln -s $readline_path /usr/lib/libreadline.so.7
+            fi
+            ;;
+        *)
+            echo Unknown system: $TARGET_OS
+            ;;
+    esac
+}
+
 function setup_gpdb_cluster() {
     init_os
     export CONFIGURE_FLAGS=" --with-openssl --with-ldap"
@@ -37,6 +61,7 @@ function setup_gpdb_cluster() {
     . /usr/local/greenplum-db-devel/greenplum_path.sh
     . gpdb_src/gpAux/gpdemo/gpdemo-env.sh
 }
+
 function install_openldap() {
     local os=""
     if [ -f /etc/redhat-release ];then
@@ -52,13 +77,17 @@ function install_openldap() {
     elif [ x$os == "xcentos" ];then
         yum install -y openldap-servers openldap-clients
     elif [ x$os == "xdebian" ];then
-        apt install -y slapd ldap-utils libldap2-dev
+        export DEBIAN_FRONTEND=noninteractive
+        apt update -y
+        echo -e '\n\n' | apt install -y slapd ldap-utils libldap2-dev
+        unset DEBIAN_FRONTEND
     else
         echo "Platform not support"
     fi
 }
 
 function _main(){
+    install_dependencies
     install_openldap
     setup_gpdb_cluster
     chown -R gpadmin:gpadmin pgbouncer_src

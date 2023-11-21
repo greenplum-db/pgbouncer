@@ -32,8 +32,6 @@
 #include <openssl/evp.h>
 #endif
 
-#include <openssl/evp.h>
-
 int log_socket_prefix(enum LogLevel lev, void *ctx, char *dst, unsigned int dstlen)
 {
 	const struct PgSocket *sock = ctx;
@@ -516,6 +514,66 @@ const char *pga_details(const PgAddr *a, char *dst, int dstlen)
 		snprintf(dst, dstlen, "%s:%d", buf, pga_port(a));
 	}
 	return dst;
+}
+
+int generate_key_iv(const char *password, const unsigned char *salt, const char *cipher, const char *digest,
+                    unsigned char *key, unsigned char *iv)
+{
+    int key_length = 0;
+    const EVP_CIPHER *evp_cipher;
+    const EVP_MD *evp_digest = NULL;
+
+    OpenSSL_add_all_algorithms();
+
+    evp_cipher = EVP_get_cipherbyname(cipher);
+    if (!evp_cipher)
+    {
+        log_error("No such cipher: %s", cipher);
+        return 0;
+    }
+
+    evp_digest = EVP_get_digestbyname(digest);
+    if (!evp_digest)
+    {
+        log_error("No such digest: %s", digest);
+        return 0;
+    }
+
+    key_length = EVP_BytesToKey(evp_cipher, evp_digest, salt, (const unsigned char *)password, strlen(password), 1, key, iv);
+    return key_length;
+}
+
+int decrypt_input(const char *in, int length, const char *cipher, char *out, unsigned char *key, unsigned char *iv)
+{
+    int declen = 0;
+    int outlen = 0;
+    EVP_CIPHER_CTX *ctx = NULL;
+    const EVP_CIPHER *evp_cipher = NULL;
+
+    evp_cipher = EVP_get_cipherbyname(cipher);
+    if (!evp_cipher) {
+        log_error("no such cipher: %s", cipher);
+        return -1;
+    }
+
+    ctx = EVP_CIPHER_CTX_new();
+    if (EVP_CipherInit_ex(ctx, evp_cipher, NULL, key, iv, 0) != 1)
+        goto fail;
+    if (EVP_CipherUpdate(ctx, (unsigned char *)out, &outlen, (const unsigned char *)in, length) != 1)
+        goto fail;
+
+    declen = outlen;
+    if (EVP_CipherFinal(ctx, (unsigned char *)out + outlen, &outlen) != 1)
+        goto fail;
+
+    declen += outlen;
+    EVP_CIPHER_CTX_free(ctx);
+
+    return declen;
+fail:
+    EVP_CIPHER_CTX_free(ctx);
+    log_error("input data could not be decrypted");
+    return -1;
 }
 
 bool cf_set_authdb(struct CfValue *cv, const char *value)

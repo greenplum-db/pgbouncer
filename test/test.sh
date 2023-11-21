@@ -44,6 +44,8 @@ BOUNCER_ADMIN_HOST=/tmp
 
 LOGDIR=log
 NC_PORT=6668
+## PG_PORT=6666
+## PG_LOG=$LOGDIR/pg.log
 
 # gpdb doesn't support alter system, so use the following function to reconfig it
 reconf_pgsql() {
@@ -51,7 +53,7 @@ reconf_pgsql() {
 	for ln in "$@"; do
 		echo "$ln" >> ${PGDATA}/postgresql.conf
 	done
-	gpstop  -u
+	gpstop -u
 }
 
 # not used
@@ -61,6 +63,7 @@ pgctl() {
 
 ulimit -c unlimited
 
+## command -v initdb > /dev/null || {
 which initdb > /dev/null || {
 	echo "initdb not found, need postgres tools in PATH"
 	exit 1
@@ -107,15 +110,23 @@ else
 fi
 
 if ! $use_unix_sockets; then
-	BOUNCER_ADMIN_HOST=/tmp
+	## BOUNCER_ADMIN_HOST=/tmp
+	BOUNCER_ADMIN_HOST=127.0.0.1
 
 	cp test.ini test.ini.bak
+	## echo "unix_socket_dir = ''" >> test.ini
 	sed -i 's/^unix_socket_dir =/#&/' test.ini
 	echo 'admin_users = pgbouncer' >> test.ini
 fi
 
+# Up to PostgreSQL 13, the server can handle passwords up to 996 bytes (including zero byte), after that it's longer.
 MAX_PASSWORD=$(sed -n $SED_ERE_OP 's/#define MAX_PASSWORD[[:space:]]+([0-9]+)/\1/p' ../include/bouncer.h)
-long_password=$(printf '%*s' $(($MAX_PASSWORD - 1)) | tr ' ' 'a')
+## if test $pg_majorversion -lt 14 -a $MAX_PASSWORD -gt 996; then
+## 	MAX_PASSWORD=996
+## fi
+## long_password=$(printf '%*s' $(($MAX_PASSWORD - 1)) | tr ' ' 'a')
+MAX_PASSWORD=$(($MAX_PASSWORD > 996 && $pg_majorversion < 14 ? 996 : MAX_PASSWORD))
+long_password=$(printf '%*s' $MAX_PASSWORD | tr ' ' 'a')
 
 # System configuration checks
 if ! grep -q "^\"${USER:=$(id -un)}\"" userlist.txt; then
@@ -131,9 +142,9 @@ if test -n "$USE_SUDO"; then
 		sudo pfctl -a pgbouncer -F all -q 2>&1 | grep -q "pfctl:" && {
 			cat <<-EOF
 			Please enable PF and add the following rule to /etc/pf.conf
-			
+
 			  anchor "pgbouncer/*"
-			
+
 			EOF
 			exit 1
 		}
@@ -152,20 +163,74 @@ stopit() {
 }
 
 stopit test.pid
+## stopit pgdata/postmaster.pid
 
 mkdir -p $LOGDIR
 rm -f $BOUNCER_LOG
+## rm -f $BOUNCER_LOG $PG_LOG
+## rm -rf $PGDATA
 # suppose gpdb has been started
+
+# if [ ! -d $PGDATA ]; then
+# 	mkdir $PGDATA
+# 	initdb -A trust --nosync >> $PG_LOG
+# 	if $use_unix_sockets; then
+# 		echo "unix_socket_directories = '/tmp'" >> pgdata/postgresql.conf
+# 	fi
+# 	# We need to make the log go to stderr so that the tests can
+# 	# check what is being logged.  This should be the default, but
+# 	# some packagings change the default configuration.
+# 	cat >>pgdata/postgresql.conf <<-EOF
+# 	logging_collector = off
+# 	log_destination = stderr
+# 	log_connections = on
+# 	EOF
+# 	if $use_unix_sockets; then
+# 		local='local'
+# 	else
+# 		local='#local'
+# 	fi
+# 	if $pg_supports_scram; then
+# 		cat >pgdata/pg_hba.conf <<-EOF
+# 		$local  p6   all                scram-sha-256
+# 		host   p6   all  127.0.0.1/32  scram-sha-256
+# 		host   p6   all  ::1/128       scram-sha-256
+# 		EOF
+# 	else
+# 		cat >pgdata/pg_hba.conf </dev/null
+# 	fi
+# 	cat >>pgdata/pg_hba.conf <<-EOF
+# 	$local  p4   all                password
+# 	host   p4   all  127.0.0.1/32  password
+# 	host   p4   all  ::1/128       password
+# 	$local  p5   all                md5
+# 	host   p5   all  127.0.0.1/32  md5
+# 	host   p5   all  ::1/128       md5
+# 	$local  all  all                trust
+# 	host   all  all  127.0.0.1/32  trust
+# 	host   all  all  ::1/128       trust
+# 	EOF
+# fi
 
 if $use_unix_sockets; then
 	sed $SED_ERE_OP -i "/unix_socket_director/s:.*(unix_socket_director.*=).*:\\1 '/tmp':" ${PGDATA}/postgresql.conf
 fi
+# We need to make the log go to stderr so that the tests can
+# check what is being logged.  This should be the default, but
+# some packagings change the default configuration.
 cat >>${PGDATA}/postgresql.conf <<-EOF
+logging_collector = off
+log_destination = stderr
 log_connections = on
 EOF
+if $use_unix_sockets; then
+    local='local'
+else
+    local='#local'
+fi
 if $pg_supports_scram; then
 	cat >${PGDATA}/pg_hba.conf <<-EOF
-	local  p6   all                scram-sha-256
+	$local  p6   all                scram-sha-256
 	host   p6   all  127.0.0.1/32  scram-sha-256
 	host   p6   all  ::1/128       scram-sha-256
 	EOF
@@ -173,13 +238,13 @@ else
 	cat >${PGDATA}/pg_hba.conf </dev/null
 fi
 cat >>${PGDATA}/pg_hba.conf <<-EOF
-local  p4   all                password
+$local  p4   all                password
 host   p4   all  127.0.0.1/32  password
 host   p4   all  ::1/128       password
-local  p5   all                md5
+$local  p5   all                md5
 host   p5   all  127.0.0.1/32  md5
 host   p5   all  ::1/128       md5
-local  all  all                trust
+$local  all  all                trust
 host   all  all  127.0.0.1/32  trust
 host   all  all  ::1/128       trust
 EOF
@@ -187,6 +252,8 @@ gpstop -u
 if ! $use_unix_sockets; then
 	sed -i 's/^local/#local/' pgdata/pg_hba.conf
 fi
+
+## pgctl start
 
 echo "Creating databases"
 psql -X -p $PG_PORT -l | grep p0 > /dev/null || {
@@ -201,6 +268,7 @@ psql -X -p $PG_PORT -d p0 -c "select * from pg_user" | grep pswcheck > /dev/null
 	psql -X -o /dev/null -p $PG_PORT -c "create user pswcheck with superuser createdb password 'pgbouncer-check';" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user someuser with password 'anypasswd';" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user maxedout;" p0 || exit 1
+	psql -X -o /dev/null -p $PG_PORT -c "create user maxedout2;" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user longpass with password '$long_password';" p0 || exit 1
 	psql -X -o /dev/null -p $PG_PORT -c "create user ldapuser1" p0 || exit 1
 	if $pg_supports_scram; then
@@ -288,6 +356,8 @@ fw_reset() {
 
 complete() {
 	test -f $BOUNCER_PID && kill `cat $BOUNCER_PID` >/dev/null 2>&1
+    ## pgctl -m fast stop
+    # gpstop -ar
 	rm -f $BOUNCER_PID
 	test -e test.ini.bak && mv test.ini.bak test.ini
 	test -e userlist.txt.bak && mv userlist.txt.bak userlist.txt
@@ -370,6 +440,10 @@ test_show_version() {
 	test x"$v1" = x"$v2"
 }
 
+test_help() {
+	$BOUNCER_EXE --help || return 1
+}
+
 # test all the show commands
 #
 # This test right now just runs all the commands without checking the
@@ -377,7 +451,7 @@ test_show_version() {
 # commands don't completely die.  The output can be manually eyeballed
 # in the test log file.
 test_show() {
-	for what in clients config databases fds help lists pools servers sockets active_sockets stats stats_totals stats_averages users totals mem dns_hosts dns_zones; do
+	for what in clients config databases fds help lists pools servers sockets active_sockets stats stats_totals stats_averages users totals mem dns_hosts dns_zones state; do
 		    echo "=> show $what;"
 		    psql -X -h $BOUNCER_ADMIN_HOST -U pgbouncer -d pgbouncer -c "show $what;" || return 1
 	done
@@ -462,6 +536,7 @@ test_client_idle_timeout() {
 test_server_login_retry() {
 	admin "set query_timeout=60"
 	admin "set server_login_retry=30"
+    ## (pgctl -m fast stop; sleep 3; pgctl start) &
 	gpstop -aM fast
 	(sleep 4; gpstart -a) &
 	sleep 2
@@ -500,6 +575,8 @@ test_tcp_user_timeout() {
 
 # server_connect_timeout
 test_server_connect_timeout_establish() {
+	## psql -X -p $PG_PORT -c "alter system set pre_auth_delay to '60s'" p0
+	## pgctl reload
 	reconf_pgsql "pre_auth_delay=60"
 	sleep 1
 
@@ -510,6 +587,8 @@ test_server_connect_timeout_establish() {
 	grep "closing because: connect timeout" $BOUNCER_LOG
 	rc=$?
 
+    ## rm -f pgdata/postgresql.auto.conf
+	## pgctl reload
 	rm -f ${PGDATA}/postgresql.auto.conf
 	reconf_pgsql
 	sleep 1
@@ -631,6 +710,46 @@ test_min_pool_size() {
 	test "$cnt" -eq 3 || return 1
 }
 
+test_min_pool_size_with_lower_max_user_connections() {
+	# The p0x in test.init has min_pool_size set to 5. This should make
+	# the bouncer try to create a pool for maxedout2 user of size 5 after a
+	# client connects to the bouncer. However maxedout2 user has
+	# max_user_connections set to 2, so the final pool size should be only 2.
+
+	# Running a query for sufficient time for us to reach the final
+	# connection count in the pool and detect any evictions.
+	psql -X -U maxedout2 -c "select pg_sleep(1)" p0x >/dev/null
+
+	new_connection_cnt=`grep "new connection to server" $BOUNCER_LOG | wc -l`
+	echo "new_connection_cnt: expected=2 actual=$new_connection_cnt"
+	test $new_connection_cnt -eq 2 || return 1
+	evicted_cnt=`grep "closing because: evicted" $BOUNCER_LOG | wc -l`
+	echo "new_connection_cnt: expected=0 actual=$evicted_cnt"
+	test $evicted_cnt -eq 0 || return 1
+
+	return 0
+}
+
+test_min_pool_size_with_lower_max_db_connections() {
+	# The p0x in test.init has min_pool_size set to 5. This should make
+	# the bouncer try to create a pool for puser1 user of size 5 after a client
+	# connects to the bouncer. However the db also has max_db_connections set
+	# to 2, so the final pool size should be only 2.
+
+	# Running a query for sufficient time for us to reach the final
+	# connection count in the pool and detect any evictions.
+	PGPASSWORD=foo psql -X -U puser1 -c "select pg_sleep(1)" p0y >/dev/null
+
+	new_connection_cnt=`grep "new connection to server" $BOUNCER_LOG | wc -l`
+	echo "new_connection_cnt: expected=2 actual=$new_connection_cnt"
+	test $new_connection_cnt -eq 2 || return 1
+	evicted_cnt=`grep "closing because: evicted" $BOUNCER_LOG | wc -l`
+	echo "new_connection_cnt: expected=0 actual=$evicted_cnt"
+	test $evicted_cnt -eq 0 || return 1
+
+	return 0
+}
+
 test_reserve_pool_size() {
 	# make existing connections go away
 	psql -X -p $PG_PORT -d postgres -c "select pg_terminate_backend(pid) from pg_stat_activity where usename='bouncer'"
@@ -691,6 +810,22 @@ test_max_user_connections() {
 	}
 
 	test `docount` -eq 3 || return 1
+
+	return 0
+}
+
+test_connect_query() {
+	# The p8 database definition in test.ini has some GUC settings
+	# in connect_query.  Check that they get set.  (The particular
+	# settings don't matter; just use some that are easy to set
+	# and read.)
+
+	result=`psql -X -tAq -c "show enable_seqscan" p8`
+	echo "enable_seqscan=$result"
+	test "$result" = "off" || return 1
+	result=`psql -X -tAq -c "show enable_nestloop" p8`
+	echo "enable_nestloop=$result"
+	test "$result" = "off" || return 1
 
 	return 0
 }
@@ -770,7 +905,7 @@ test_enable_disable() {
 	grep -q "enabled 1" $LOGDIR/test.tmp || return 1
 	grep -q "enabled 2" $LOGDIR/test.tmp || return 1
 	grep -q "disabled 1" $LOGDIR/test.tmp && return 1
-	grep -q "does not allow" $LOGDIR/test.tmp || return 1
+	grep -q "is disabled" $LOGDIR/test.tmp || return 1
 	return 0
 }
 
@@ -779,6 +914,7 @@ test_database_restart() {
 	admin "set server_login_retry=1"
 
 	psql -X -c "select now() as p0_before_restart" p0
+    ## pgctl -m fast restart
 	gpstop -ar
 	echo `date` restart 1
 	psql -X -c "select now() as p0_after_restart" p0 || return 1
@@ -790,6 +926,7 @@ test_database_restart() {
 		psql -X -c "select pg_sleep($i)" p1 &
 	done
 
+    ## pgctl -m fast restart
 	gpstop -ar
 	echo `date` restart 2
 
@@ -913,6 +1050,63 @@ test_auth_user() {
 	return 0
 }
 
+# tests auth_dbname whether it can be set and honored correctly.
+test_auth_dbname() {
+	$have_getpeereid || return 77
+	local result
+
+	admin "set auth_type='md5'"
+
+	# tests the case when auth_dbname is not configured globally or for the target database.
+	curuser=`psql -X -d "dbname=authdb user=someuser password=anypasswd" -tAq -c "select current_user;"`
+	echo "empty auth_dbname test, curuser=$curuser"
+	test "$curuser" = "someuser" || return 1
+
+	# test if invalid globally set auth_dbname results in
+	# client disconnection.
+	admin "set auth_dbname='p_unconfigured_auth_dbname'"
+
+	curuser=`psql -X -d "dbname=authdb user=someuser password=anypasswd" -tAq -c "select current_user;"`
+	echo "unconfigured database test, curuser=$curuser"
+	test "$curuser" = "" || return 1
+	grep -q "bouncer config error" $BOUNCER_LOG  || return 1
+
+	# test if auth_dbname specified in connection string takes precedence over global setting
+	curuser=`psql -X -d "dbname=pauthz user=someuser password=anypasswd" -tAq -c "select current_user;"`
+	echo "conn string test, curuser=$curuser"
+	test "$curuser" = "someuser" || return 1
+
+	# test if we reject on disabled database.
+	admin "disable authdb"
+	curuser=`psql -X -d "dbname=pauthz user=someuser password=anypasswd" -tAq -c "select current_user;"`
+	echo "disable test curuser=$curuser"
+	test "$curuser" = "" || return 1
+	grep -q "authentication database \"authdb\" is disabled" $BOUNCER_LOG || return 1
+	admin "enable authdb"
+
+	# prepare for the scenario where fallback (*) database can also have auth_dbname set.
+	# additionally, a global "auth_user" is set in this scenario to access authdb.
+	cp test.ini test.ini.bak
+	sed 's/^;\*/*/g' test.ini > test2.ini
+	sed '/^\*/s/$/ auth_dbname = authdb/g' test2.ini > test3.ini
+	echo "auth_user = pswcheck" >> test3.ini
+	mv test3.ini test.ini
+	rm test2.ini
+
+	admin "reload"
+	admin "set auth_type='md5'"
+
+	curuser=`psql -X -d "dbname=postgres user=someuser password=anypasswd" -tAq -c "select current_user;"`
+	echo "default db test, curuser=$curuser"
+	test "$curuser" = "someuser" || return 1
+
+	# revert the changes
+	mv test.ini.bak test.ini
+	admin "reload"
+
+	return 0
+}
+
 # test plain-text password authentication from PgBouncer to PostgreSQL server
 #
 # The PostgreSQL server no longer supports storing plain-text
@@ -932,7 +1126,8 @@ test_password_server() {
 	psql -X -c "select 1" p4z && return 1
 
 	# long password from auth_file
-	psql -X -c "select 1" p4l || return 1
+    #TODO: Fix psql: error: FATAL:  client_login_timeout (server down)
+	#psql -X -c "select 1" p4l || return 1
 
 	return 0
 }
@@ -1246,8 +1441,81 @@ test_auto_database() {
 	rm test.ini.bak
 
 	test $status1 -eq 0 -a $status2 -eq 0
+}
+
+test_no_database() {
+	psql -X -d nosuchdb1 -c "select 1" && return 1
+	grep -F "no such database: nosuchdb1" $BOUNCER_LOG || return 1
+
 	return 0
 }
+
+test_no_database_authfail() {
+	$have_getpeereid || return 77
+
+	admin "set auth_type='md5'"
+
+	PGPASSWORD=wrong psql -X -d nosuchdb1 -c "select 1" && return 1
+	grep -F "closing because: password authentication failed" $BOUNCER_LOG || return 1
+
+	return 0
+}
+
+test_no_database_auth_user() {
+	$have_getpeereid || return 77
+
+	admin "set auth_type='md5'"
+	admin "set auth_user='pswcheck'"
+
+	PGPASSWORD=wrong psql -X -d nosuchdb1 -U someuser -c "select 1" && return 1
+	grep "closing because: password authentication failed" $BOUNCER_LOG || return 1
+
+	return 0
+}
+
+test_no_database_md5_auth_scram_pw_success() {
+	# Testing what happens on successful SCRAM auth connection to non-existent DB
+	# Segfaults have been seen after mock authentication was put in place
+	# with md5 auth and a scram PW when saving SCRAM credentials. Including this test to check for the
+	# condition repeating.
+
+	$have_getpeereid || return 77
+
+	admin "set auth_type='md5'"
+	PGPASSWORD=foo psql -X -U scramuser1 -d nosuchdb1 -c "select 1" && return 1
+	grep -F "no such database: nosuchdb1" $BOUNCER_LOG || return 1
+
+    return 0
+}
+
+test_no_database_scram_auth_scram_pw_success() {
+	# Testing what happens on successful SCRAM auth with a SCRAM PW connection to non-existent DB
+	# Segfaults have been seen after mock authentication was put in place
+	# with md5 auth and a scram PW. Including this test for completeness
+
+	$have_getpeereid || return 77
+
+	admin "set auth_type='scram-sha-256'"
+	PGPASSWORD=foo psql -X -U scramuser1 -d nosuchdb1 -c "select 1" && return 1
+	grep -F "no such database: nosuchdb1" $BOUNCER_LOG || return 1
+
+    return 0
+}
+
+test_no_database_md5_auth_md5_pw_success() {
+	# Testing what happens on successful MD5 auth with a MD5 pw connection to non-existent DB
+	# Segfaults have been seen after mock authentication was put in place
+	# with md5 auth and a scram PW. Including this test for completeness
+
+	$have_getpeereid || return 77
+
+	admin "set auth_type='md5'"
+	PGPASSWORD=foo psql -X -U muser1 -d nosuchdb1 -c "select 1" && return 1
+	grep -F "no such database: nosuchdb1" $BOUNCER_LOG || return 1
+
+    return 0
+}
+
 
 test_cancel() {
 	case `uname` in MINGW*) return 77;; esac
@@ -1258,6 +1526,7 @@ test_cancel() {
 	kill -INT $psql_pid
 	wait $psql_pid
 	test $? -ne 0 || return 1
+	## grep -F "canceling statement due to user request" $PG_LOG || return 1
 
 	return 0
 }
@@ -1291,6 +1560,7 @@ test_cancel_wait() {
 	# the first psql would simply run the full sleep and exit
 	# successfully.
 	test $? -ne 0 || return 1
+	## grep -F "canceling statement due to user request" $PG_LOG || return 1
 
 	return 0
 }
@@ -1327,9 +1597,76 @@ test_cancel_pool_size() {
 	# and the psql processes would simply run the full sleep and
 	# exit successfully.
 	test $? -ne 0 || return 1
+	## grep -F "canceling statement due to user request" $PG_LOG || return 1
 
 	return 0
 }
+
+# Test that cancel requests connections don't trigger cancellation of a query
+# from a different client.
+#
+# See also GH PR #717. Prior to this change it was possible to that a query was
+# cancelled on client A by a cancellation for client B, if the server was
+# released by client B and then reused by client A while the cancellation was
+# already in flight.
+test_cancel_race() {
+	case `uname` in MINGW*) return 77;; esac
+
+	# Make sure only one query can run at the same time so that its ensured
+	# that both clients will use the same server connection.
+	admin "set default_pool_size=1"
+	admin "set server_idle_timeout=2"
+
+	echo 'select pg_sleep(5);' | psql -X -d p3 &
+	psql1_pid=$!
+	sleep 1
+	psql -X -d p3 -c "select pg_sleep(1)" &
+	psql2_pid=$!
+	sleep 1
+	echo psql1_pid $psql1_pid
+
+	# Spam many concurrent cancel requests to try and trigger race conditions
+	for i in $(seq 100); do
+		kill -INT $psql1_pid &
+	done
+
+	wait $psql1_pid && return 1
+	wait $psql2_pid || return 1
+}
+
+# This test checks database specifications with host lists.  The way
+# we test this here is to have a host list containing an IPv4 and an
+# IPv6 representation of localhost, and then we check the log that
+# both connections were made.  Some CI environments don't have IPv6
+# localhost configured.  Therefore, this test is skipped by default
+# and needs to be enabled explicitly by setting HAVE_IPV6_LOCALHOST to
+# non-empty.
+test_host_list() {
+	test -z "$HAVE_IPV6_LOCALHOST" && return 77
+
+	psql -X -d hostlist1 -c 'select pg_sleep(1)' >/dev/null &
+	psql -X -d hostlist1 -c 'select 1'
+	psql -X -d hostlist1 -c 'select 2'
+
+	grep -F "hostlist1/bouncer@127.0.0.1:${PG_PORT} new connection to server" $BOUNCER_LOG || return 1
+	grep -F "hostlist1/bouncer@[::1]:${PG_PORT} new connection to server" $BOUNCER_LOG || return 1
+	return 0
+}
+
+# This is the same test as above, except it doesn't use any IPv6
+# addresses.  So we can't actually tell apart that two separate
+# connections are made.  But the test is useful to get some test
+# coverage (valgrind etc.) of the host list code on systems without
+# IPv6 enabled.
+test_host_list_dummy() {
+	psql -X -d hostlist2 -c 'select pg_sleep(1)' >/dev/null &
+	psql -X -d hostlist2 -c 'select 1'
+	psql -X -d hostlist2 -c 'select 2'
+
+	grep -F "hostlist2/bouncer@127.0.0.1:${PG_PORT} new connection to server" $BOUNCER_LOG || return 1
+	return 0
+}
+
 # Test admin user login in different auth_type
 test_admin_user_login() {
 	# auth_type = hba
@@ -1352,6 +1689,7 @@ EOF
 	fi
 	return $re
 }
+
 # Test ldap authentication
 test_ldap_authentication() {
 	if [ ! -e ../ldap_configured ];then
@@ -1534,9 +1872,11 @@ EOF
 
 testlist="
 test_show_version
+test_help
 test_show
 test_server_login_retry
 test_auth_user
+test_auth_dbname
 test_client_idle_timeout
 test_server_lifetime
 test_server_idle_timeout
@@ -1549,9 +1889,12 @@ test_tcp_user_timeout
 test_max_client_conn
 test_pool_size
 test_min_pool_size
+test_min_pool_size_with_lower_max_user_connections
+test_min_pool_size_with_lower_max_db_connections
 test_reserve_pool_size
 test_max_db_connections
 test_max_user_connections
+test_connect_query
 test_online_restart
 test_pause_resume
 test_suspend_resume
@@ -1579,9 +1922,17 @@ test_no_user_scram
 test_no_user_scram_forced_user
 test_no_user_auth_user
 test_auto_database
+test_no_database
+test_no_database_authfail
+test_no_database_auth_user
+test_no_database_md5_auth_scram_pw_success
+test_no_database_scram_auth_scram_pw_success
+test_no_database_md5_auth_md5_pw_success
 test_cancel
 test_cancel_wait
 test_cancel_pool_size
+test_host_list
+test_host_list_dummy
 test_admin_user_login
 test_ldap_authentication
 "

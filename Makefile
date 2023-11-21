@@ -5,6 +5,7 @@ bin_PROGRAMS = pgbouncer
 
 pgbouncer_SOURCES = \
 	src/admin.c \
+	src/auth_ldap.c \
 	src/client.c \
 	src/dnslookup.c \
 	src/hba.c \
@@ -14,7 +15,6 @@ pgbouncer_SOURCES = \
 	src/main.c \
 	src/objects.c \
 	src/pam.c \
-	src/auth_ldap.c \
 	src/pktbuf.c \
 	src/pooler.c \
 	src/proto.c \
@@ -33,6 +33,7 @@ pgbouncer_SOURCES = \
 	src/common/unicode_norm.c \
 	src/common/wchar.c \
 	include/admin.h \
+	include/auth_ldap.h \
 	include/bouncer.h \
 	include/client.h \
 	include/dnslookup.h \
@@ -43,7 +44,6 @@ pgbouncer_SOURCES = \
 	include/messages.h \
 	include/objects.h \
 	include/pam.h \
-	include/auth_ldap.h \
 	include/pktbuf.h \
 	include/pooler.h \
 	include/proto.h \
@@ -67,7 +67,8 @@ pgbouncer_SOURCES = \
 	include/common/uthash_lowercase.h
 
 UTHASH = uthash
-pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS)
+COMMON_CFLAGS = -Wall
+pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS) $(COMMON_CFLAGS)
 pgbouncer_CPPFLAGS += -I$(UTHASH)/src
 
 # include libusual sources directly
@@ -82,10 +83,10 @@ dist_doc_DATA = README.md NEWS.md \
 	etc/pgbouncer.socket \
 	etc/userlist.txt
 
-#DISTCLEANFILES = config.mak config.status lib/usual/config.h config.log
+DISTCLEANFILES = config.mak config.status lib/usual/config.h config.log
 
-#DIST_SUBDIRS = doc test
-#dist_man_MANS = doc/pgbouncer.1 doc/pgbouncer.5
+DIST_SUBDIRS = doc test
+dist_man_MANS = doc/pgbouncer.1 doc/pgbouncer.5
 
 # files in tgz
 EXTRA_DIST = AUTHORS COPYRIGHT Makefile config.mak.in config.sub config.guess \
@@ -94,7 +95,7 @@ EXTRA_DIST = AUTHORS COPYRIGHT Makefile config.mak.in config.sub config.guess \
 	     etc/mkauth.py etc/optscan.sh etc/example.debian.init.sh \
 	     win32/Makefile \
 	     $(LIBUSUAL_DIST) \
-	     $(UTHASH_DIST) \
+	     $(UTHASH_DIST)
 
 # libusual files (FIXME: list should be provided by libusual...)
 LIBUSUAL_DIST = $(filter-out %/config.h, $(sort $(wildcard \

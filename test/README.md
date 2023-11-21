@@ -32,6 +32,33 @@ pip install -r requirements.txt
 
 ## Various ways to test PgBouncer
 
+### `test.sh`
+
+    General test of basic functionality and different configuration
+    parameters including timeouts, pool size, online restart,
+    pause/resume, etc.  To invoke, just run `./test.sh`.  This needs
+    PostgreSQL server programs (`initdb`, `pg_ctl`) in the path, so if
+    you are on a system that doesn't have those in the normal path
+    (e.g., Debian, Ubuntu), set `PATH` beforehand.
+
+    This test is run by `make check`.
+
+    Optionally, this test suite can use `iptables`/`pfctl` to simulate
+    various network conditions.  To include these tests, set the
+    environment variable USE_SUDO to a nonempty value, for example
+    `make check USE_SUDO=1`.  This will ask for sudo access, so it
+    might convenient to run `sudo -v` before the test, or set up
+    `/etc/sudoers` appropriately at your peril.  Check the source if
+    there are any doubts.
+
+
+### `ssl/test.sh`
+
+    Tests SSL/TLS functionality.  Otherwise very similar to `test.sh`.
+
+    This test is run by `make check` if TLS support is enabled.
+
+
 ### `test_xxx.py`
 
 These are general tests of basic functionality and different configuration

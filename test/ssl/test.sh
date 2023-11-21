@@ -2,8 +2,6 @@
 
 cd $(dirname $0)
 
-rm -rf TestCA1 TestCA2
-
 which psql
 if [ $? -ne 0 ]
 then
@@ -13,14 +11,7 @@ fi
 # PG_PORT is gpdb master server port and PGPORT will be set us pgboucer server port
 PG_PORT=${PGPORT}
 
-(
-./newca.sh TestCA1 C=QQ O=Org1 CN="TestCA1"
-./newsite.sh TestCA1 localhost C=QQ O=Org1 L=computer OU=db
-./newsite.sh TestCA1 bouncer C=QQ O=Org1 L=computer OU=Dev
-./newsite.sh TestCA1 random C=QQ O=Org1 L=computer OU=Dev
-./newca.sh TestCA2 C=QQ O=Org2 CN="TestCA2"
-./newsite.sh TestCA2 localhost C=QQ O=Org1 L=computer OU=db
-) > /dev/null
+( sh ./create_certs.sh ) > /dev/null
 #export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH
 #export PATH=/usr/local/pgsql/bin:$PATH
 export PGDATA=$MASTER_DATA_DIRECTORY
@@ -35,7 +26,7 @@ mkdir -p tmp
 BOUNCER_LOG=test.log
 BOUNCER_INI=test.ini
 BOUNCER_PID=test.pid
-BOUNCER_PORT=`sed -n '/^listen_port/s/listen_port.*=[^0-9]*//p' $BOUNCER_INI`
+BOUNCER_PORT=$(sed -n '/^listen_port/s/listen_port.*=[^0-9]*//p' $BOUNCER_INI)
 BOUNCER_EXE="$BOUNCER_EXE_PREFIX ../../pgbouncer"
 
 LOGDIR=log

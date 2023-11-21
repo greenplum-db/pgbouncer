@@ -274,19 +274,21 @@ static bool eat(struct TokParser *p, enum TokType ttype)
 	}
 	return false;
 }
+
 #ifdef HAVE_LDAP
 static void eat_all(struct TokParser *p)
 {
 	p->cur_tok = TOK_EOL;
 }
 #endif
+
 static bool eat_kw(struct TokParser *p, const char *kw)
 {
 	if (p->cur_tok == TOK_IDENT && strcmp(kw, p->cur_tok_str) == 0) {
 #ifdef HAVE_LDAP
 		if(strcmp(kw, "ldap") != 0) /* Need to get the start of content after ldap */
 #endif
-			next_token(p);
+		next_token(p);
 		return true;
 	}
 	return false;
@@ -768,9 +770,8 @@ int hba_eval(struct HBA *hba, PgAddr *addr, bool is_tls, const char *dbname, con
 
 #ifdef HAVE_LDAP
 		if (rule->rule_method == AUTH_LDAP) {
-			if (dst != NULL) {
+			if (dst != NULL)
 				*dst = rule->auth_options;
-			}
 		}
 #endif
 		/* rule matches */

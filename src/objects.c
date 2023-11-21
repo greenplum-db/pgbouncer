@@ -1830,7 +1830,6 @@ PgSocket *accept_client(int sock, bool is_unix)
 	return client;
 }
 
-
 /* send cached parameters to client to pretend being server */
 /* client managed to authenticate, send welcome msg and accept queries */
 bool finish_client_login(PgSocket *client)
@@ -2021,6 +2020,13 @@ found:
 	 * cancelled in a many-to-one way.
 	 */
 	server = main_client->link;
+    /* ignore cancel request if the server is setting vars*/
+	if (server->setting_vars) {
+                slog_error(req, "ignore cancel request");
+		disconnect_client(req, false, "don't cancel server during setting vars");
+		return;
+	}
+
 	req->canceled_server = server;
 	statlist_append(&server->canceling_clients, &req->cancel_head);
 

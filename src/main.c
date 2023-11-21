@@ -60,7 +60,7 @@ static void usage(const char *exe)
 	printf("\n");
 #endif
 	printf("Report bugs to <%s>.\n", PACKAGE_BUGREPORT);
-	//printf("%s home page: <%s>\n", PACKAGE_NAME, PACKAGE_URL);
+	printf("%s home page: <%s>\n", PACKAGE_NAME, PACKAGE_URL);
 	exit(0);
 }
 
@@ -240,8 +240,10 @@ static const struct CfKey bouncer_params [] = {
 	CF_ABS("admin_users", CF_STR, cf_admin_users, 0, ""),
 	CF_ABS("application_name_add_host", CF_INT, cf_application_name_add_host, 0, "0"),
 	CF_ABS("auth_dbname", CF_AUTHDB, cf_auth_dbname, 0, NULL),
+	CF_ABS("auth_cipher", CF_STR, cf_auth_cipher, 0, NULL),
 	CF_ABS("auth_file", CF_STR, cf_auth_file, 0, NULL),
 	CF_ABS("auth_hba_file", CF_STR, cf_auth_hba_file, 0, ""),
+	CF_ABS("auth_key_file", CF_STR, cf_auth_key_file, 0, NULL),
 	CF_ABS("auth_query", CF_STR, cf_auth_query, 0, "SELECT usename, passwd FROM pg_shadow WHERE usename=$1"),
 	CF_ABS("auth_type", CF_LOOKUP(auth_type_map), cf_auth_type, 0, "md5"),
 	CF_ABS("auth_user", CF_STR, cf_auth_user, 0, NULL),
@@ -437,9 +439,8 @@ void load_config(void)
 	ok = cf_load_file(&main_config, cf_config_file);
 	if (ok) {
 		/* load users if needed */
-		if (requires_auth_file(cf_auth_type)) {
+		if (requires_auth_file(cf_auth_type))
 			loader_users_check();
-		}
 		loaded = true;
 	} else if (!loaded) {
 		die("cannot load config file");
