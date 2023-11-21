@@ -77,8 +77,10 @@ function install_openldap() {
     elif [ x$os == "xcentos" ];then
         yum install -y openldap-servers openldap-clients
     elif [ x$os == "xdebian" ];then
+        export DEBIAN_FRONTEND=noninteractive
         apt update -y
         echo -e '\n\n' | apt install -y slapd ldap-utils libldap2-dev
+        unset DEBIAN_FRONTEND
     else
         echo "Platform not support"
     fi
