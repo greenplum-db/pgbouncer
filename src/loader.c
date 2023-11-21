@@ -23,18 +23,11 @@
 #include "bouncer.h"
 
 #include <usual/fileutil.h>
+#include <usual/string.h>
 
 /*
  * ConnString parsing
  */
-
-/* just skip whitespace */
-static char *cstr_skip_ws(char *p)
-{
-	while (*p && *p == ' ')
-		p++;
-	return p;
-}
 
 /* parse parameter name before '=' */
 static char *cstr_get_key(char *p, char **dst_p)
@@ -127,29 +120,42 @@ static char * cstr_get_pair(char *p,
 	return cstr_skip_ws(p);
 }
 
-static void set_connect_query(PgDatabase *db, const char *new)
+/*
+ * Same as strcmp, but handles NULLs. If both sides are NULL, returns "true".
+ */
+static bool strings_equal(const char *str_left, const char *str_right)
 {
-	const char *old = db->connect_query;
-	char *val = NULL;
+	if (str_left == NULL && str_right == NULL)
+		return true;
 
-	if (old && new) {
-		if (strcmp(old, new) == 0)
-			return;
-		val = strdup(new);
-		if (val) {
-			free((void *)old);
-			db->connect_query = val;
+	if (str_left == NULL || str_right == NULL)
+		return false;
+
+	return strcmp(str_left, str_right) == 0;
+}
+
+/*
+ * Free the old value and set the new value
+ */
+static bool set_param_value(char **old_value, const char *new_value)
+{
+	if (strings_equal(*old_value, new_value))
+		return true;
+
+	if (*old_value)
+		free(*old_value);
+
+	if (new_value) {
+		*old_value = strdup(new_value);
+		if (!(*old_value)) {
+			log_error("out of memory");
+			return false;
 		}
-	} else if (new) {
-		val = strdup(new);
-		db->connect_query = val;
 	} else {
-		free((void *)db->connect_query);
-		db->connect_query = NULL;
+		*old_value = NULL;
 	}
 
-	if (new && !val)
-		log_error("no memory, cannot assign connect_query for %s", db->name);
+	return true;
 }
 
 static bool set_autodb(const char *connstr)
@@ -173,6 +179,83 @@ static bool set_autodb(const char *connstr)
 }
 
 /* fill PgDatabase from connstr */
+bool parse_peer(void *base, const char *name, const char *connstr)
+{
+	char *p, *key, *val;
+	PgDatabase *peer;
+
+	char *tmp_connstr;
+	char *host = NULL;
+	int port = 6432;
+	int pool_size = -1;
+	int peer_id = strtonum(name, 1, 0xFFFF, NULL);
+	if (peer_id == 0) {
+		log_error("ids of peers must be a number larger than 0 and at most 65536");
+		return false;
+	}
+
+	tmp_connstr = strdup(connstr);
+	if (!tmp_connstr) {
+		log_error("out of memory");
+		return false;
+	}
+
+	p = tmp_connstr;
+	while (*p) {
+		p = cstr_get_pair(p, &key, &val);
+		if (p == NULL) {
+			log_error("syntax error in connection string");
+			goto fail;
+		} else if (!key[0]) {
+			break;
+		}
+
+		if (strcmp("host", key) == 0) {
+			host = strdup(val);
+			if (!host) {
+				log_error("out of memory");
+				goto fail;
+			}
+		} else if (strcmp("port", key) == 0) {
+			port = atoi(val);
+			if (port == 0) {
+				log_error("invalid port: %s", val);
+				goto fail;
+			}
+		} else if (strcmp("pool_size", key) == 0) {
+			pool_size = atoi(val);
+		} else {
+			log_error("unrecognized connection parameter: %s", key);
+			goto fail;
+		}
+	}
+
+	if (!host) {
+		log_error("host was not provided for peer %d", peer_id);
+		goto fail;
+	}
+
+	peer = add_peer(name, peer_id);
+	if (!peer) {
+		log_error("cannot create peer, no memory?");
+		goto fail;
+	}
+
+	/* tag the peer as alive */
+	peer->db_dead = false;
+
+	free(peer->host);
+	peer->host = host;
+	peer->port = port;
+	peer->pool_size = pool_size;
+
+	free(tmp_connstr);
+	return true;
+fail:
+	free(tmp_connstr);
+	return false;
+}
+/* fill PgDatabase from connstr */
 bool parse_database(void *base, const char *name, const char *connstr)
 {
 	char *p, *key, *val;
@@ -189,22 +272,22 @@ bool parse_database(void *base, const char *name, const char *connstr)
 	char *tmp_connstr;
 	const char *dbname = name;
 	char *host = NULL;
-	char *port = "5432";
+	int port = 5432;
 	char *username = NULL;
 	char *password = "";
 	char *auth_username = NULL;
+	char *auth_dbname = NULL;
 	char *client_encoding = NULL;
 	char *datestyle = NULL;
 	char *timezone = NULL;
 	char *connect_query = NULL;
 	char *appname = NULL;
-
-	int v_port;
+	char *auth_query = NULL;
 
 	cv.value_p = &pool_mode;
 	cv.extra = (const void *)pool_mode_map;
 
-	if (strcmp(name, "pgbouncer") == 0) {
+	if (!check_reserved_database(name)) {
 		log_error("database name \"%s\" is reserved", name);
 		return false;
 	}
@@ -232,15 +315,25 @@ bool parse_database(void *base, const char *name, const char *connstr)
 		if (strcmp("dbname", key) == 0) {
 			dbname = val;
 		} else if (strcmp("host", key) == 0) {
-			host = val;
+			host = strdup(val);
+			if (!host) {
+				log_error("out of memory");
+				goto fail;
+			}
 		} else if (strcmp("port", key) == 0) {
-			port = val;
+			port = atoi(val);
+			if (port == 0) {
+				log_error("invalid port: %s", val);
+				goto fail;
+			}
 		} else if (strcmp("user", key) == 0) {
 			username = val;
 		} else if (strcmp("password", key) == 0) {
 			password = val;
 		} else if (strcmp("auth_user", key) == 0) {
 			auth_username = val;
+		} else if (strcmp("auth_dbname", key) == 0) {
+			auth_dbname = val;
 		} else if (strcmp("client_encoding", key) == 0) {
 			client_encoding = val;
 		} else if (strcmp("datestyle", key) == 0) {
@@ -261,35 +354,25 @@ bool parse_database(void *base, const char *name, const char *connstr)
 				goto fail;
 			}
 		} else if (strcmp("connect_query", key) == 0) {
-			connect_query = val;
+			connect_query = strdup(val);
+			if (!connect_query) {
+				log_error("out of memory");
+				goto fail;
+			}
 		} else if (strcmp("application_name", key) == 0) {
 			appname = val;
+		} else if (strcmp("auth_query", key) == 0) {
+			auth_query = val;
 		} else {
 			log_error("unrecognized connection parameter: %s", key);
 			goto fail;
 		}
 	}
 
-	/* port= */
-	v_port = atoi(port);
-	if (v_port == 0) {
-		log_error("invalid port: %s", port);
-		goto fail;
-	}
-
 	db = add_database(name);
 	if (!db) {
 		log_error("cannot create database, no memory?");
 		goto fail;
-	}
-
-	/* host= */
-	if (host) {
-		host = strdup(host);
-		if (!host) {
-			log_error("failed to allocate host=");
-			goto fail;
-		}
 	}
 
 	/* tag the db as alive */
@@ -303,11 +386,9 @@ bool parse_database(void *base, const char *name, const char *connstr)
 		bool changed = false;
 		if (strcmp(db->dbname, dbname) != 0) {
 			changed = true;
-		} else if (!!host != !!db->host) {
+		} else if (!strings_equal(host, db->host)) {
 			changed = true;
-		} else if (host && strcmp(host, db->host) != 0) {
-			changed = true;
-		} else if (v_port != db->port) {
+		} else if (port != db->port) {
 			changed = true;
 		} else if (username && !db->forced_user) {
 			changed = true;
@@ -315,30 +396,33 @@ bool parse_database(void *base, const char *name, const char *connstr)
 			changed = true;
 		} else if (!username && db->forced_user) {
 			changed = true;
-		} else if ((db->connect_query && !connect_query)
-			 || (!db->connect_query && connect_query)
-			 || (connect_query && strcmp(connect_query, db->connect_query) != 0))
-		{
+		} else if (!strings_equal(connect_query, db->connect_query)) {
+			changed = true;
+		} else if (!strings_equal(db->auth_dbname, auth_dbname)) {
+			changed = true;
+		} else if (!strings_equal(db->auth_query, auth_query)) {
 			changed = true;
 		}
 		if (changed)
 			tag_database_dirty(db);
 	}
 
-	/* if pool_size < 0 it will be set later */
+	free(db->host);
+	db->host = host;
+	db->port = port;
 	db->pool_size = pool_size;
 	db->min_pool_size = min_pool_size;
 	db->res_pool_size = res_pool_size;
 	db->pool_mode = pool_mode;
 	db->max_db_connections = max_db_connections;
+	free(db->connect_query);
+	db->connect_query = connect_query;
 
-	if (db->host)
-		free(db->host);
-	db->host = host;
-	db->port = v_port;
+	if (!set_param_value(&db->auth_dbname, auth_dbname))
+		goto fail;
 
-	/* assign connect_query */
-	set_connect_query(db, connect_query);
+	if (!set_param_value(&db->auth_query, auth_query))
+		goto fail;
 
 	if (db->startup_params) {
 		msg = db->startup_params;
@@ -394,6 +478,7 @@ bool parse_database(void *base, const char *name, const char *connstr)
 
 	/* remember dbname */
 	db->dbname = (char *)msg->buf + dbname_ofs;
+
 	free(tmp_connstr);
 	return true;
 fail:
@@ -523,12 +608,12 @@ static bool auth_loaded(const char *fn)
 		memset(&cur, 0, sizeof(cur));
 
 	if (cache_set && cache.st_dev == cur.st_dev
-	&& cache.st_ino == cur.st_ino
-	&& cache.st_mode == cur.st_mode
-	&& cache.st_uid == cur.st_uid
-	&& cache.st_gid == cur.st_gid
-	&& cache.st_mtime == cur.st_mtime
-	&& cache.st_size == cur.st_size)
+	    && cache.st_ino == cur.st_ino
+	    && cache.st_mode == cur.st_mode
+	    && cache.st_uid == cur.st_uid
+	    && cache.st_gid == cur.st_gid
+	    && cache.st_mtime == cur.st_mtime
+	    && cache.st_size == cur.st_size)
 		return true;
 	cache = cur;
 	cache_set = true;
@@ -600,7 +685,7 @@ bool load_auth_file(const char *fn)
 			log_error("username too long in auth file");
 			break;
 		}
-		*p++ = 0; /* tag username end */
+		*p++ = 0;	/* tag username end */
 
 		/* get password */
 		p = find_quote(p, true);
@@ -618,7 +703,7 @@ bool load_auth_file(const char *fn)
 			log_error("password too long in auth file");
 			break;
 		}
-		*p++ = 0; /* tag password end */
+		*p++ = 0;	/* tag password end */
 
 		/* send them away */
 		unquote_add_user(user, password);

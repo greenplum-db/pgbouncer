@@ -27,7 +27,14 @@
  * parse protocol header from struct MBuf
  */
 
-/* parses pkt header from buffer, returns false if failed */
+/*
+ * Parses pkt header from buffer, returns false if failed.
+ *
+ * This handles both regular packets as well as startup/special
+ * packets (which are actually v2-style packets).  Afterwards, the
+ * type and the length is available in pkt independent of what kind
+ * this packet is.
+ */
 bool get_header(struct MBuf *data, PktHdr *pkt)
 {
 	unsigned type;
@@ -43,33 +50,50 @@ bool get_header(struct MBuf *data, PktHdr *pkt)
 	mbuf_copy(data, &hdr);
 
 	if (mbuf_avail_for_read(&hdr) < NEW_HEADER_LEN) {
-		log_noise("get_header: less than 5 bytes available");
+		log_noise("get_header: less than %d bytes available", NEW_HEADER_LEN);
 		return false;
 	}
 	if (!mbuf_get_byte(&hdr, &type8))
 		return false;
 	type = type8;
 	if (type != 0) {
+		/*
+		 * Regular (v3) packet, starts with type byte and
+		 * 4-byte length.
+		 */
+
 		/* wire length does not include type byte */
 		if (!mbuf_get_uint32be(&hdr, &len))
 			return false;
 		len++;
 		got = NEW_HEADER_LEN;
 	} else {
+		/*
+		 * Startup/special (formerly v2) packet, formally
+		 * starts with 4-byte length.  We assume the first
+		 * byte is zero because in current use they shouldn't
+		 * be that long to have more than zero in the MSB.
+		 */
+
+		/* second byte should also be zero */
 		if (!mbuf_get_byte(&hdr, &type8))
 			return false;
 		if (type8 != 0) {
 			log_noise("get_header: unknown special pkt");
 			return false;
 		}
+
 		/* don't tolerate partial pkt */
 		if (mbuf_avail_for_read(&hdr) < OLD_HEADER_LEN - 2) {
-			log_noise("get_header: less than 8 bytes for special pkt");
+			log_noise("get_header: less than %d bytes for special pkt", OLD_HEADER_LEN);
 			return false;
 		}
+
 		if (!mbuf_get_uint16be(&hdr, &len16))
 			return false;
 		len = len16;
+
+		/* 4-byte code follows */
 		if (!mbuf_get_uint32be(&hdr, &code))
 			return false;
 		if (code == PKT_CANCEL) {
@@ -120,8 +144,10 @@ bool get_header(struct MBuf *data, PktHdr *pkt)
  * to be closed after an ERROR-level error.  So to be nice, level_fatal should
  * be true if the caller plans to close the connection after sending this
  * error.
+ * Error code 08P01 (ERRCODE_PROTOCOL_VIOLATION) is used as default error code
+ * if no SQLSTATE is provided.
  */
-bool send_pooler_error(PgSocket *client, bool send_ready, bool level_fatal, const char *msg)
+bool send_pooler_error(PgSocket *client, bool send_ready, const char *sqlstate, bool level_fatal, const char *msg)
 {
 	uint8_t tmpbuf[512];
 	PktBuf buf;
@@ -132,7 +158,7 @@ bool send_pooler_error(PgSocket *client, bool send_ready, bool level_fatal, cons
 	pktbuf_static(&buf, tmpbuf, sizeof(tmpbuf));
 	pktbuf_write_generic(&buf, 'E', "cscscsc",
 			     'S', level_fatal ? "FATAL" : "ERROR",
-			     'C', "08P01", 'M', msg, 0);
+			     'C', sqlstate ? sqlstate : "08P01", 'M', msg, 0);
 	if (send_ready)
 		pktbuf_write_ReadyForQuery(&buf);
 	return pktbuf_send_immediate(&buf, client);
@@ -141,9 +167,9 @@ bool send_pooler_error(PgSocket *client, bool send_ready, bool level_fatal, cons
 /*
  * Parse server error message and log it.
  */
-void parse_server_error(PktHdr *pkt, const char **level_p, const char **msg_p)
+void parse_server_error(PktHdr *pkt, const char **level_p, const char **msg_p, const char **sqlstate_p)
 {
-	const char *level = NULL, *msg = NULL, *val;
+	const char *level = NULL, *msg = NULL, *sqlstate = NULL, *val;
 	uint8_t type;
 	while (mbuf_avail_for_read(&pkt->data)) {
 		if (!mbuf_get_byte(&pkt->data, &type))
@@ -156,17 +182,20 @@ void parse_server_error(PktHdr *pkt, const char **level_p, const char **msg_p)
 			level = val;
 		} else if (type == 'M') {
 			msg = val;
+		} else if (type == 'C') {
+			sqlstate = val;
 		}
 	}
 	*level_p = level;
 	*msg_p = msg;
+	*sqlstate_p = sqlstate;
 }
 
 void log_server_error(const char *note, PktHdr *pkt)
 {
-	const char *level = NULL, *msg = NULL;
+	const char *level = NULL, *msg = NULL, *sqlstate = NULL;
 
-	parse_server_error(pkt, &level, &msg);
+	parse_server_error(pkt, &level, &msg, &sqlstate);
 
 	if (!msg || !level) {
 		log_error("%s: partial error message, cannot log", note);
@@ -234,6 +263,42 @@ bool welcome_client(PgSocket *client)
 
 	/* give each client its own cancel key */
 	get_random_bytes(client->cancel_key, 8);
+
+	/*
+	 * If pgbouncer peering is enabled we change some of the random bits of the
+	 * cancel key to non random values, otherwise the peering feature cannot be
+	 * implemented in an efficient way. This reduces the randomness of the key
+	 * somewhat, but it still leaves us with 45 bits of randomness. This should
+	 * be enough for all practical attacks to be mitigated (there are still
+	 * ~35 trillion random combinations of these bits).
+	 */
+	if (cf_peer_id > 0) {
+		/*
+		 * The 2nd and 3rd byte represent the peer id. Pgbouncers that are
+		 * peered with this one can forward the request to us by reading this
+		 * peer id when they receive this cancellation.
+		 */
+		client->cancel_key[1] = cf_peer_id & 0xFF;
+		client->cancel_key[2] = (cf_peer_id >> 8) & 0xFF;
+
+		/*
+		 * Initially we set the two TTL mask bits to a 1, so that the cancel
+		 * message can be forwarded to peers up to 3 times.
+		 */
+		client->cancel_key[7] |= CANCELLATION_TTL_MASK;
+	}
+
+	/*
+	 * The first 32 bits of the cancel_key are considered a PID. Since
+	 * actual PIDs are always positive we clear the sign bit. Most clients
+	 * work fine when receiving a negative number in this PID part, but it
+	 * turned out that pg_basebackup did not. This is fixed in
+	 * pg_basebackup, but to avoid similar future problems with other
+	 * clients we clear the sign bit. See this thread for more details:
+	 * https://www.postgresql.org/message-id/flat/CAGECzQQOGvYfp8ziF4fWQ_o8s2K7ppaoWBQnTmdakn3s-4Z%3D5g%40mail.gmail.com
+	 */
+	client->cancel_key[0] &= 0x7F;
+
 	pktbuf_write_BackendKeyData(msg, client->cancel_key);
 
 	/* finish */
@@ -294,7 +359,8 @@ static bool login_md5_psw(PgSocket *server, const uint8_t *salt)
 
 	switch (get_password_type(user->passwd)) {
 	case PASSWORD_TYPE_PLAINTEXT:
-		pg_md5_encrypt(user->passwd, user->name, strlen(user->name), txt);
+		if (!pg_md5_encrypt(user->passwd, user->name, strlen(user->name), txt))
+			return false;
 		src = txt + 3;
 		break;
 	case PASSWORD_TYPE_MD5:
@@ -302,11 +368,12 @@ static bool login_md5_psw(PgSocket *server, const uint8_t *salt)
 		break;
 	default:
 		slog_error(server, "cannot do MD5 authentication: wrong password type");
-		kill_pool_logins(server->pool, "server login failed: wrong password type");
+		kill_pool_logins(server->pool, NULL, "server login failed: wrong password type");
 		return false;
 	}
 
-	pg_md5_encrypt(src, (char *)salt, 4, txt);
+	if (!pg_md5_encrypt(src, (char *)salt, 4, txt))
+		return false;
 
 	return send_password(server, txt);
 }
@@ -324,18 +391,17 @@ static bool login_scram_sha_256(PgSocket *server)
 	case PASSWORD_TYPE_SCRAM_SHA_256:
 		if (!user->has_scram_keys) {
 			slog_error(server, "cannot do SCRAM authentication: password is SCRAM secret but client authentication did not provide SCRAM keys");
-			kill_pool_logins(server->pool, "server login failed: wrong password type");
+			kill_pool_logins(server->pool, NULL, "server login failed: wrong password type");
 			return false;
 		}
 		break;
 	default:
 		slog_error(server, "cannot do SCRAM authentication: wrong password type");
-		kill_pool_logins(server->pool, "server login failed: wrong password type");
+		kill_pool_logins(server->pool, NULL, "server login failed: wrong password type");
 		return false;
 	}
 
-	if (server->scram_state.client_nonce)
-	{
+	if (server->scram_state.client_nonce) {
 		slog_error(server, "protocol error: duplicate AuthenticationSASL message from server");
 		return false;
 	}
@@ -364,14 +430,12 @@ static bool login_scram_sha_256_cont(PgSocket *server, unsigned datalen, const u
 	bool res;
 	char *client_final_message = NULL;
 
-	if (!server->scram_state.client_nonce)
-	{
+	if (!server->scram_state.client_nonce) {
 		slog_error(server, "protocol error: AuthenticationSASLContinue without prior AuthenticationSASL");
 		return false;
 	}
 
-	if (server->scram_state.server_first_message)
-	{
+	if (server->scram_state.server_first_message) {
 		slog_error(server, "SCRAM exchange protocol error: received second AuthenticationSASLContinue");
 		return false;
 	}
@@ -415,8 +479,7 @@ static bool login_scram_sha_256_final(PgSocket *server, unsigned datalen, const 
 	char *input;
 	char ServerSignature[SHA256_DIGEST_LENGTH];
 
-	if (!server->scram_state.server_first_message)
-	{
+	if (!server->scram_state.server_first_message) {
 		slog_error(server, "protocol error: AuthenticationSASLFinal without prior AuthenticationSASLContinue");
 		return false;
 	}
@@ -432,11 +495,10 @@ static bool login_scram_sha_256_final(PgSocket *server, unsigned datalen, const 
 	if (!read_server_final_message(server, input, ServerSignature))
 		goto failed;
 
-	if (!verify_server_signature(&server->scram_state, user, ServerSignature))
-	{
+	if (!verify_server_signature(&server->scram_state, user, ServerSignature)) {
 		slog_error(server, "invalid server signature");
-		kill_pool_logins(server->pool, "server login failed: invalid server signature");
-		return false;
+		kill_pool_logins(server->pool, NULL, "server login failed: invalid server signature");
+		goto failed;
 	}
 
 	free(ibuf);
@@ -494,9 +556,10 @@ bool answer_authreq(PgSocket *server, PktHdr *pkt)
 
 		if (!selected_mechanism) {
 			slog_error(server, "none of the server's SASL authentication mechanisms are supported");
-			kill_pool_logins(server->pool, "server login failed: none of the server's SASL authentication mechanisms are supported");
-		} else
+			kill_pool_logins(server->pool, NULL, "server login failed: none of the server's SASL authentication mechanisms are supported");
+		} else {
 			res = login_scram_sha_256(server);
+		}
 		break;
 	}
 	case AUTH_SASL_CONT:
@@ -525,7 +588,7 @@ bool answer_authreq(PgSocket *server, PktHdr *pkt)
 		break;
 	}
 	default:
-		slog_error(server, "unknown/unsupported auth method: %d", cmd);
+		slog_error(server, "unknown/unsupported auth method: %u", cmd);
 		res = false;
 		break;
 	}
@@ -578,15 +641,13 @@ int scan_text_result(struct MBuf *pkt, const char *tupdesc, ...)
 
 		if (i < ncol) {
 			if (!mbuf_get_uint32be(pkt, &len)) {
-				va_end(ap);
-				return -1;
+				goto failed;
 			}
 			if ((int32_t)len < 0) {
 				val = NULL;
 			} else {
 				if (!mbuf_get_chars(pkt, len, &val)) {
-					va_end(ap);
-					return -1;
+					goto failed;
 				}
 			}
 
@@ -633,14 +694,15 @@ int scan_text_result(struct MBuf *pkt, const char *tupdesc, ...)
 				int newlen;
 				if (strncmp(val, "\\x", 2) != 0) {
 					log_warning("invalid bytea value");
-					return -1;
+					goto failed;
 				}
 
 				newlen = (len - 2) / 2;
 				*len_p = newlen;
 				*bytes_p = malloc(newlen);
-				if (!(*bytes_p))
-					return -1;
+				if (!(*bytes_p)) {
+					goto failed;
+				}
 				for (int j = 0; j < newlen; j++) {
 					unsigned int b;
 					sscanf(val + 2 + 2 * j, "%2x", &b);
@@ -659,4 +721,7 @@ int scan_text_result(struct MBuf *pkt, const char *tupdesc, ...)
 	va_end(ap);
 
 	return ncol;
+failed:
+	va_end(ap);
+	return -1;
 }

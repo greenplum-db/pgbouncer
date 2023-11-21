@@ -23,10 +23,16 @@
 #include "bouncer.h"
 #include "scram.h"
 
+#include <usual/err.h>
+#include <usual/safeio.h>
+#include <usual/slab.h>
+
 /* those items will be allocated as needed, never freed */
 STATLIST(user_list);
 STATLIST(database_list);
 STATLIST(pool_list);
+STATLIST(peer_list);
+STATLIST(peer_pool_list);
 
 /* All locally defined users (in auth_file) are kept here. */
 struct AATree user_tree;
@@ -40,6 +46,13 @@ struct AATree user_tree;
 struct AATree pam_user_tree;
 
 /*
+ * The global prepared statement cache, which deduplicates prepared statements
+ * sent by the clients statements by storing every unique prepared statement
+ * only once.
+ */
+PgPreparedStatement *prepared_statements = NULL;
+
+/*
  * client and server objects will be pre-allocated
  * they are always in either active or free lists
  * in addition to others.
@@ -49,9 +62,14 @@ STATLIST(login_client_list);
 struct Slab *server_cache;
 struct Slab *client_cache;
 struct Slab *db_cache;
+struct Slab *peer_cache;
+struct Slab *peer_pool_cache;
 struct Slab *pool_cache;
 struct Slab *user_cache;
 struct Slab *iobuf_cache;
+struct Slab *outstanding_request_cache;
+struct Slab *var_list_cache;
+struct Slab *server_prepared_statement_cache;
 
 /*
  * libevent may still report events when event_del()
@@ -83,7 +101,9 @@ static void construct_client(void *obj)
 	memset(client, 0, sizeof(PgSocket));
 	list_init(&client->head);
 	sbuf_init(&client->sbuf, client_proto);
+	client->vars.var_list = slab_alloc(var_list_cache);
 	client->state = CL_FREE;
+	client->client_prepared_statements = NULL;
 }
 
 static void construct_server(void *obj)
@@ -93,7 +113,10 @@ static void construct_server(void *obj)
 	memset(server, 0, sizeof(PgSocket));
 	list_init(&server->head);
 	sbuf_init(&server->sbuf, server_proto);
+	server->vars.var_list = slab_alloc(var_list_cache);
 	server->state = SV_FREE;
+	server->server_prepared_statements = NULL;
+	statlist_init(&server->outstanding_requests, "outstanding_requests");
 }
 
 /* compare string with PgUser->name, for usage with btree */
@@ -118,9 +141,12 @@ void init_objects(void)
 	aatree_init(&pam_user_tree, user_node_cmp, NULL);
 	user_cache = slab_create("user_cache", sizeof(PgUser), 0, NULL, USUAL_ALLOC);
 	db_cache = slab_create("db_cache", sizeof(PgDatabase), 0, NULL, USUAL_ALLOC);
+	peer_cache = slab_create("peer_cache", sizeof(PgDatabase), 0, NULL, USUAL_ALLOC);
+	peer_pool_cache = slab_create("peer_pool_cache", sizeof(PgPool), 0, NULL, USUAL_ALLOC);
 	pool_cache = slab_create("pool_cache", sizeof(PgPool), 0, NULL, USUAL_ALLOC);
+	outstanding_request_cache = slab_create("outstanding_request_cache", sizeof(OutstandingRequest), 0, NULL, USUAL_ALLOC);
 
-	if (!user_cache || !db_cache || !pool_cache)
+	if (!user_cache || !db_cache || !peer_cache || !peer_pool_cache || !pool_cache)
 		fatal("cannot create initial caches");
 }
 
@@ -136,7 +162,39 @@ void init_caches(void)
 	server_cache = slab_create("server_cache", sizeof(PgSocket), 0, construct_server, USUAL_ALLOC);
 	client_cache = slab_create("client_cache", sizeof(PgSocket), 0, construct_client, USUAL_ALLOC);
 	iobuf_cache = slab_create("iobuf_cache", IOBUF_SIZE, 0, do_iobuf_reset, USUAL_ALLOC);
+	var_list_cache = slab_create("var_list_cache", sizeof(struct PStr *) * get_num_var_cached(), 0, NULL, USUAL_ALLOC);
+	server_prepared_statement_cache = slab_create("server_prepared_statement_cache", sizeof(PgServerPreparedStatement), 0, NULL, USUAL_ALLOC);
 }
+
+/* free all memory related to the given client */
+static void client_free(PgSocket *client)
+{
+	free_client_prepared_statements(client);
+	varcache_clean(&client->vars);
+	slab_free(var_list_cache, client->vars.var_list);
+	slab_free(client_cache, client);
+}
+
+/* free all memory related to the given server */
+static void server_free(PgSocket *server)
+{
+	struct List *el, *tmp_l;
+	OutstandingRequest *request;
+
+	statlist_for_each_safe(el, &server->outstanding_requests, tmp_l) {
+		request = container_of(el, OutstandingRequest, node);
+		statlist_remove(&server->canceling_clients, el);
+		if (request->server_ps)
+			free_server_prepared_statement(request->server_ps);
+		slab_free(outstanding_request_cache, request);
+	}
+
+	free_server_prepared_statements(server);
+	varcache_clean(&server->vars);
+	slab_free(var_list_cache, server->vars.var_list);
+	slab_free(server_cache, server);
+}
+
 
 /* state change means moving between lists */
 void change_client_state(PgSocket *client, SocketState newstate)
@@ -158,15 +216,18 @@ void change_client_state(PgSocket *client, SocketState newstate)
 	case CL_WAITING_LOGIN:
 		if (newstate == CL_ACTIVE)
 			newstate = CL_LOGIN;
-		/* fallthrough */
+	/* fallthrough */
 	case CL_WAITING:
 		statlist_remove(&pool->waiting_client_list, &client->head);
 		break;
 	case CL_ACTIVE:
 		statlist_remove(&pool->active_client_list, &client->head);
 		break;
-	case CL_CANCEL:
-		statlist_remove(&pool->cancel_req_list, &client->head);
+	case CL_ACTIVE_CANCEL:
+		statlist_remove(&pool->active_cancel_req_list, &client->head);
+		break;
+	case CL_WAITING_CANCEL:
+		statlist_remove(&pool->waiting_cancel_req_list, &client->head);
 		break;
 	default:
 		fatal("bad cur client state: %d", client->state);
@@ -177,8 +238,7 @@ void change_client_state(PgSocket *client, SocketState newstate)
 	/* put to new location */
 	switch (client->state) {
 	case CL_FREE:
-		varcache_clean(&client->vars);
-		slab_free(client_cache, client);
+		client_free(client);
 		break;
 	case CL_JUSTFREE:
 		statlist_append(&justfree_client_list, &client->head);
@@ -194,8 +254,11 @@ void change_client_state(PgSocket *client, SocketState newstate)
 	case CL_ACTIVE:
 		statlist_append(&pool->active_client_list, &client->head);
 		break;
-	case CL_CANCEL:
-		statlist_append(&pool->cancel_req_list, &client->head);
+	case CL_ACTIVE_CANCEL:
+		statlist_append(&pool->active_cancel_req_list, &client->head);
+		break;
+	case CL_WAITING_CANCEL:
+		statlist_append(&pool->waiting_cancel_req_list, &client->head);
 		break;
 	default:
 		fatal("bad new client state: %d", client->state);
@@ -223,11 +286,17 @@ void change_server_state(PgSocket *server, SocketState newstate)
 	case SV_TESTED:
 		statlist_remove(&pool->tested_server_list, &server->head);
 		break;
+	case SV_BEING_CANCELED:
+		statlist_remove(&pool->being_canceled_server_list, &server->head);
+		break;
 	case SV_IDLE:
 		statlist_remove(&pool->idle_server_list, &server->head);
 		break;
 	case SV_ACTIVE:
 		statlist_remove(&pool->active_server_list, &server->head);
+		break;
+	case SV_ACTIVE_CANCEL:
+		statlist_remove(&pool->active_cancel_server_list, &server->head);
 		break;
 	default:
 		fatal("bad old server state: %d", server->state);
@@ -238,8 +307,7 @@ void change_server_state(PgSocket *server, SocketState newstate)
 	/* put to new location */
 	switch (server->state) {
 	case SV_FREE:
-		varcache_clean(&server->vars);
-		slab_free(server_cache, server);
+		server_free(server);
 		break;
 	case SV_JUSTFREE:
 		statlist_append(&justfree_server_list, &server->head);
@@ -254,6 +322,9 @@ void change_server_state(PgSocket *server, SocketState newstate)
 	case SV_TESTED:
 		statlist_append(&pool->tested_server_list, &server->head);
 		break;
+	case SV_BEING_CANCELED:
+		statlist_append(&pool->being_canceled_server_list, &server->head);
+		break;
 	case SV_IDLE:
 		if (server->close_needed || cf_server_round_robin) {
 			/* try to avoid immediate usage then */
@@ -265,6 +336,9 @@ void change_server_state(PgSocket *server, SocketState newstate)
 		break;
 	case SV_ACTIVE:
 		statlist_append(&pool->active_server_list, &server->head);
+		break;
+	case SV_ACTIVE_CANCEL:
+		statlist_append(&pool->active_cancel_server_list, &server->head);
 		break;
 	default:
 		fatal("bad server state: %d", server->state);
@@ -278,8 +352,25 @@ static int cmp_pool(struct List *i1, struct List *i2)
 	PgPool *p2 = container_of(i2, PgPool, head);
 	if (p1->db != p2->db)
 		return strcmp(p1->db->name, p2->db->name);
-	if (p1->user != p2->user)
+	if (p1->user != p2->user) {
+		if (p1->user == NULL) {
+			return 1;
+		}
+		if (p2->user == NULL) {
+			return -1;
+		}
 		return strcmp(p1->user->name, p2->user->name);
+	}
+	return 0;
+}
+
+/* compare pool names, for use with put_in_order */
+static int cmp_peer_pool(struct List *i1, struct List *i2)
+{
+	PgPool *p1 = container_of(i1, PgPool, head);
+	PgPool *p2 = container_of(i2, PgPool, head);
+	if (p1->db != p2->db)
+		return p1->db->peer_id - p2->db->peer_id;
 	return 0;
 }
 
@@ -290,6 +381,15 @@ static int cmp_user(struct List *i1, struct List *i2)
 	PgUser *u2 = container_of(i2, PgUser, head);
 	return strcmp(u1->name, u2->name);
 }
+
+/* compare db names, for use with put_in_order */
+static int cmp_peer(struct List *i1, struct List *i2)
+{
+	PgDatabase *db1 = container_of(i1, PgDatabase, head);
+	PgDatabase *db2 = container_of(i2, PgDatabase, head);
+	return db1->peer_id - db2->peer_id;
+}
+
 
 /* compare db names, for use with put_in_order */
 static int cmp_database(struct List *i1, struct List *i2)
@@ -316,6 +416,25 @@ static void put_in_order(struct List *newitem, struct StatList *list,
 		}
 	}
 	statlist_append(list, newitem);
+}
+
+/* create new object if new, then return it */
+PgDatabase *add_peer(const char *name, int peer_id)
+{
+	PgDatabase *peer = find_peer(peer_id);
+
+	/* create new object if needed */
+	if (peer == NULL) {
+		peer = slab_alloc(peer_cache);
+		if (!peer)
+			return NULL;
+
+		list_init(&peer->head);
+		peer->peer_id = peer_id;
+		put_in_order(&peer->head, &peer_list, cmp_peer);
+	}
+
+	return peer;
 }
 
 /* create new object if new, then return it */
@@ -454,6 +573,19 @@ PgUser *force_user(PgDatabase *db, const char *name, const char *passwd)
 }
 
 /* find an existing database */
+PgDatabase *find_peer(int peer_id)
+{
+	struct List *item;
+	PgDatabase *peer;
+	statlist_for_each(item, &peer_list) {
+		peer = container_of(item, PgDatabase, head);
+		if (peer->peer_id == peer_id)
+			return peer;
+	}
+	return NULL;
+}
+
+/* find an existing database */
 PgDatabase *find_database(const char *name)
 {
 	struct List *item, *tmp;
@@ -474,6 +606,23 @@ PgDatabase *find_database(const char *name)
 		}
 	}
 	return NULL;
+}
+
+/*
+ * Similar to find_database. In case databse is not found, it will try to register
+ * it if auto-database ('*') is configured.
+ */
+PgDatabase *find_or_register_database(PgSocket *connection, const char *name)
+{
+	PgDatabase *db = find_database(name);
+	if (db == NULL) {
+		db = register_auto_database(name);
+		if (db != NULL) {
+			slog_info(connection,
+				  "registered new auto-database: %s", name);
+		}
+	}
+	return db;
 }
 
 /* find existing user */
@@ -498,6 +647,7 @@ static PgPool *new_pool(PgDatabase *db, PgUser *user)
 
 	list_init(&pool->head);
 	list_init(&pool->map_head);
+	pool->orig_vars.var_list = slab_alloc(var_list_cache);
 
 	pool->user = user;
 	pool->db = db;
@@ -509,7 +659,10 @@ static PgPool *new_pool(PgDatabase *db, PgUser *user)
 	statlist_init(&pool->tested_server_list, "tested_server_list");
 	statlist_init(&pool->used_server_list, "used_server_list");
 	statlist_init(&pool->new_server_list, "new_server_list");
-	statlist_init(&pool->cancel_req_list, "cancel_req_list");
+	statlist_init(&pool->waiting_cancel_req_list, "waiting_cancel_req_list");
+	statlist_init(&pool->active_cancel_req_list, "active_cancel_req_list");
+	statlist_init(&pool->active_cancel_server_list, "active_cancel_server_list");
+	statlist_init(&pool->being_canceled_server_list, "being_canceled_server_list");
 
 	list_append(&user->pool_list, &pool->map_head);
 
@@ -519,6 +672,38 @@ static PgPool *new_pool(PgDatabase *db, PgUser *user)
 	return pool;
 }
 
+
+/*
+ * create new peer pool object
+ *
+ * This pool should only be used to forward cancellations to other pgbouncers
+ * behind the same load balancer. The user field of this pool is NULL, because
+ * cancellations don't need a user.
+ */
+static PgPool *new_peer_pool(PgDatabase *db)
+{
+	PgPool *pool;
+
+	pool = slab_alloc(peer_pool_cache);
+	if (!pool)
+		return NULL;
+
+	list_init(&pool->head);
+	list_init(&pool->map_head);
+	pool->orig_vars.var_list = slab_alloc(var_list_cache);
+
+	pool->db = db;
+
+	statlist_init(&pool->new_server_list, "new_server_list");
+	statlist_init(&pool->waiting_cancel_req_list, "waiting_cancel_req_list");
+	statlist_init(&pool->active_cancel_req_list, "active_cancel_req_list");
+	statlist_init(&pool->active_cancel_server_list, "active_cancel_server_list");
+
+	/* keep pools in peer_id order to make stats faster */
+	put_in_order(&pool->head, &peer_pool_list, cmp_peer_pool);
+
+	return pool;
+}
 /* find pool object, create if needed */
 PgPool *get_pool(PgDatabase *db, PgUser *user)
 {
@@ -537,6 +722,17 @@ PgPool *get_pool(PgDatabase *db, PgUser *user)
 	return new_pool(db, user);
 }
 
+/* find pool object for the peer */
+PgPool *get_peer_pool(PgDatabase *db)
+{
+	if (!db)
+		return NULL;
+	if (!db->pool) {
+		db->pool = new_peer_pool(db);
+	}
+	return db->pool;
+}
+
 /* deactivate socket and put into wait queue */
 static void pause_client(PgSocket *client)
 {
@@ -547,6 +743,24 @@ static void pause_client(PgSocket *client)
 	if (!sbuf_pause(&client->sbuf))
 		disconnect_client(client, true, "pause failed");
 }
+
+/*
+ * Deactivate the client socket and put it into the cancel request wait queue.
+ * We're not expecting any data from the client anymore at this point at all.
+ * But some clients might send some anyway (specifically the Go client). Since
+ * we don't care about any of that extra data we just stop reading from the
+ * socket.
+ */
+static void pause_cancel_request(PgSocket *client)
+{
+	Assert(client->state == CL_LOGIN);
+
+	slog_debug(client, "pause_cancel_request");
+	change_client_state(client, CL_WAITING_CANCEL);
+	if (!sbuf_pause(&client->sbuf))
+		disconnect_client(client, true, "pause cancel request failed");
+}
+
 
 /* wake client from wait */
 void activate_client(PgSocket *client)
@@ -599,7 +813,7 @@ bool check_fast_fail(PgSocket *client)
 		return true;
 
 	/* Else we fail the client. */
-	disconnect_client(client, true, "pgbouncer cannot connect to server");
+	disconnect_client(client, true, "server login has been failing, try again later (server_login_retry)");
 
 	/*
 	 * Try to launch a new connection.  (launch_new_connection()
@@ -608,7 +822,7 @@ bool check_fast_fail(PgSocket *client)
 	 * clients, so we need to do it here to get any new servers
 	 * eventually.
 	 */
-	launch_new_connection(pool);
+	launch_new_connection(pool, /* evict_if_needed= */ true);
 
 	return false;
 }
@@ -629,6 +843,7 @@ bool find_server(PgSocket *client)
 	if (client->link)
 		return true;
 
+	slog_noise(client, "find_server: client had no linked server yet");
 	/* try to get idle server, if allowed */
 	if (cf_pause_mode == P_PAUSE || pool->db->db_paused) {
 		server = NULL;
@@ -648,7 +863,6 @@ bool find_server(PgSocket *client)
 
 		if (!server && !check_fast_fail(client))
 			return false;
-
 	}
 	Assert(!server || server->state == SV_IDLE);
 
@@ -663,13 +877,15 @@ bool find_server(PgSocket *client)
 
 	/* link or send to waiters list */
 	if (server) {
+		slog_noise(client, "linking client to S-%p", server);
 		client->link = server;
 		server->link = client;
 		change_server_state(server, SV_ACTIVE);
 		if (varchange) {
 			server->setting_vars = true;
 			server->ready = false;
-			res = false; /* don't process client data yet */
+			res = false;	/* don't process client data yet */
+			slog_noise(client, "pausing client while applying vars");
 			if (!sbuf_pause(&client->sbuf))
 				disconnect_client(client, true, "pause failed");
 		} else {
@@ -702,6 +918,139 @@ static bool reuse_on_release(PgSocket *server)
 	return res;
 }
 
+bool queue_fake_response(PgSocket *client, char request_type)
+{
+	bool res = true;
+	PgSocket *server = client->link;
+	Assert(server);
+
+	if (request_type == 'P') {
+		slog_debug(client, "Queuing fake ParseComplete packet");
+		QUEUE_ParseComplete(res, server, client);
+	} else if (request_type == 'C') {
+		slog_debug(client, "Queuing fake CloseComplete packet");
+		QUEUE_CloseComplete(res, server, client);
+	} else {
+		fatal("Unknown fake request type %c", request_type);
+	}
+	return res;
+}
+
+/*
+ * Adds a request to the outstanding requests queue, and schedule the given
+ * action (see comments on ResponseAction for details).
+ *
+ * returns false if the required allocations failed
+ */
+bool add_outstanding_request(PgSocket *client, char type, ResponseAction action)
+{
+	OutstandingRequest *request = NULL;
+
+	PgSocket *server = client->link;
+	Assert(server);
+
+	if (action == RA_FAKE && statlist_empty(&server->outstanding_requests)) {
+		/*
+		 * If there's no outstanding requests, we can send the response
+		 * right away. And we're actually required to do that to make
+		 * sure the client receives it, because we normally only send
+		 * responses to fake requests right after we handle a response
+		 * to a real request. So if none are outstanding, we won't send
+		 * such a response.
+		 */
+		slog_noise(client, "add_outstanding_request: queueing fake response right away %c",
+			   type);
+		return queue_fake_response(client, type);
+	}
+
+	request = slab_alloc(outstanding_request_cache);
+	if (request == NULL)
+		return false;
+	request->type = type;
+	request->action = action;
+	statlist_append(&server->outstanding_requests, &request->node);
+	slog_noise(client, "add_outstanding_request: added %c, still outstanding %d",
+		   type, statlist_count(&client->link->outstanding_requests));
+	return true;
+}
+
+/*
+ * If the next outstanding request is of one of the given types, pop it off the
+ * queue. If it is of a different type, don't do anything.
+ *
+ * returns true if one of the given types was popped of off the queue.
+ */
+bool pop_outstanding_request(PgSocket *server, char *types, bool *skip)
+{
+	OutstandingRequest *request;
+	struct List *item = statlist_first(&server->outstanding_requests);
+	if (!item)
+		return false;
+
+	request = container_of(item, OutstandingRequest, node);
+	if (request->action == RA_FAKE) {
+		/*
+		 * This is weird, normally we should have already processed all fake
+		 * requests at the end of the previous packet.
+		 */
+		slog_warning(server, "pop_outstanding_request: unexpected fake request of type %c", request->type);
+		return false;
+	}
+
+	if (strchr(types, request->type) == NULL)
+		return false;
+
+	statlist_pop(&server->outstanding_requests);
+	if (skip)
+		*skip = request->action == RA_SKIP;
+	slog_noise(server, "pop_outstanding_request: popped %c, still outstanding %d, skip %d",
+		   request->type, statlist_count(&server->outstanding_requests), request->action == RA_SKIP);
+	if (request->server_ps != NULL) {
+		free_server_prepared_statement(request->server_ps);
+	}
+	slab_free(outstanding_request_cache, request);
+	return true;
+}
+
+/*
+ * clear all outstanding requests until we reach a Sync ('S') response, any
+ * Parse or Close statement requests that were still outstanding will be
+ * unregistered or re-registered from the server its cache
+ */
+bool clear_outstanding_requests_until_sync(PgSocket *server)
+{
+	struct List *item, *tmp;
+	statlist_for_each_safe(item, &server->outstanding_requests, tmp) {
+		OutstandingRequest *request = container_of(item, OutstandingRequest, node);
+		char type = request->type;
+		if (type == 'P' && request->server_ps_query_id > 0) {
+			unregister_prepared_statement(server, request->server_ps_query_id);
+			slog_noise(server,
+				   "failed prepared statement '" PREPARED_STMT_NAME_FORMAT "' removed from server cache, %d cached items",
+				   request->server_ps_query_id,
+				   HASH_COUNT(server->server_prepared_statements));
+		} else if (type == 'C' && request->server_ps != NULL) {
+			if (!add_prepared_statement(server, request->server_ps)) {
+				if (server->link)
+					disconnect_client(server->link, true, "out of memory");
+				disconnect_server(server, true, "out of memory");
+				return false;
+			}
+			slog_noise(server,
+				   "prepared statement '%s' added back to server cache, %d cached items",
+				   request->server_ps->ps->stmt_name,
+				   HASH_COUNT(server->server_prepared_statements));
+		}
+		statlist_remove(&server->outstanding_requests, item);
+		slab_free(outstanding_request_cache, request);
+
+		if (type == 'S')
+			break;
+	}
+	slog_noise(server, "clear_outstanding_requests_until_sync: still outstanding %d", statlist_count(&server->outstanding_requests));
+	return true;
+}
+
 /* send reset query */
 static bool reset_on_release(PgSocket *server)
 {
@@ -716,7 +1065,7 @@ static bool reset_on_release(PgSocket *server)
 	return res;
 }
 
-static bool life_over(PgSocket *server)
+bool life_over(PgSocket *server)
 {
 	PgPool *pool = server->pool;
 	usec_t lifetime_kill_gap = 0;
@@ -727,6 +1076,11 @@ static bool life_over(PgSocket *server)
 	if (age < cf_server_lifetime)
 		return false;
 
+	/*
+	 * Calculate the time that disconnects because of server_lifetime
+	 * must be separated.  This avoids the need to re-launch lot
+	 * of connections together.
+	 */
 	if (pool_pool_size(pool) > 0)
 		lifetime_kill_gap = cf_server_lifetime / pool_pool_size(pool);
 
@@ -741,18 +1095,21 @@ bool release_server(PgSocket *server)
 {
 	PgPool *pool = server->pool;
 	SocketState newstate = SV_IDLE;
+	struct List *cancel_item, *tmp;
 
 	Assert(server->ready);
 
 	/* remove from old list */
 	switch (server->state) {
+	case SV_BEING_CANCELED:
 	case SV_ACTIVE:
-		server->link->link = NULL;
-		server->link = NULL;
+		if (server->link) {
+			server->link->link = NULL;
+			server->link = NULL;
+		}
 
 		if (*cf_server_reset_query && (cf_server_reset_query_always ||
-					       pool_pool_mode(pool) == POOL_SESSION))
-		{
+					       pool_pool_mode(pool) == POOL_SESSION)) {
 			/* notify reset is required */
 			newstate = SV_TESTED;
 		} else if (cf_server_check_delay == 0 && *cf_server_check_query) {
@@ -774,17 +1131,48 @@ bool release_server(PgSocket *server)
 		fatal("bad server state: %d", server->state);
 	}
 
+	statlist_for_each_safe(cancel_item, &server->canceling_clients, tmp) {
+		PgSocket *cancel_client = container_of(cancel_item, PgSocket, cancel_head);
+		/*
+		 * If the cancel request is not in flight yet we can simply unlink
+		 * the cancel_client. When a cancel request doesn't have a
+		 * canceled_server linked to it forward_cancel_request will simply drop
+		 * the cancel request without forwarding it anywhere.
+		 */
+		if (cancel_client->state == CL_WAITING_CANCEL) {
+			cancel_client->canceled_server = NULL;
+			statlist_remove(&server->canceling_clients, cancel_item);
+		}
+	}
+
 	/* enforce lifetime immediately on release */
 	if (server->state != SV_LOGIN && life_over(server)) {
-		disconnect_server(server, true, "server_lifetime");
+		disconnect_server(server, true, "server lifetime over");
 		pool->last_lifetime_disconnect = get_cached_time();
 		return false;
+	}
+
+	if (statlist_count(&server->outstanding_requests) > 0) {
+		/*
+		 * We can't release the server if there are outstanding requests
+		 * that haven't been responded to yet, otherwise the server
+		 * might get linked to another client and it will get those
+		 * responses when it does not expect them. To be on the safe
+		 * side we simply close this connection.
+		 */
+		disconnect_server(server, true, "client disconnected with queries in progress");
+		return true;
 	}
 
 	/* enforce close request */
 	if (server->close_needed) {
 		disconnect_server(server, true, "close_needed");
 		return false;
+	}
+
+	if (statlist_count(&server->canceling_clients) > 0) {
+		change_server_state(server, SV_BEING_CANCELED);
+		return true;
 	}
 
 	Assert(server->link == NULL);
@@ -801,57 +1189,78 @@ bool release_server(PgSocket *server)
 	return true;
 }
 
-/* drop server connection */
-void disconnect_server(PgSocket *server, bool notify, const char *reason, ...)
+/*
+ * close server connection
+ *
+ * send_term=true means to send a Terminate message to the server
+ * before disconnecting, send_term=false means to disconnect without.
+ * The latter is for protocol and communication errors where a normal
+ * protocol termination is not possible.
+ */
+void disconnect_server(PgSocket *server, bool send_term, const char *reason, ...)
 {
-	PgPool *pool = server->pool;
-	PgSocket *client;
-	static const uint8_t pkt_term[] = {'X', 0,0,0,4};
-	bool send_term = true;
 	usec_t now = get_cached_time();
 	char buf[128];
 	va_list ap;
+	struct List *cancel_item, *tmp;
+
+	if (server == NULL) {
+		return;
+	}
 
 	va_start(ap, reason);
 	vsnprintf(buf, sizeof(buf), reason, ap);
 	va_end(ap);
 	reason = buf;
 
-	if (cf_log_disconnections)
+	if (cf_log_disconnections) {
 		slog_info(server, "closing because: %s (age=%" PRIu64 "s)", reason,
 			  (now - server->connect_time) / USEC);
+	}
 
 	switch (server->state) {
-	case SV_ACTIVE:
-		client = server->link;
+	case SV_ACTIVE_CANCEL:
+	case SV_ACTIVE: {
+		PgSocket *client = server->link;
+
 		if (client) {
 			client->link = NULL;
 			server->link = NULL;
-			disconnect_client(client, true, "%s", reason);
+			/*
+			 * Send reason to client if it is already
+			 * logged in, otherwise send generic message.
+			 */
+			if (client->state == CL_ACTIVE || client->state == CL_WAITING)
+				disconnect_client(client, true, "%s", reason);
+			else if (client->state == CL_ACTIVE_CANCEL)
+				disconnect_client(client, false, "successfully sent cancel request");
+			else
+				disconnect_client(client, true, "bouncer config error");
 		}
+
 		break;
+	}
 	case SV_TESTED:
 	case SV_USED:
 	case SV_IDLE:
+	case SV_BEING_CANCELED:
 		break;
 	case SV_LOGIN:
 		/*
 		 * usually disconnect means problems in startup phase,
 		 * except when sending cancel packet
 		 */
-		if (!server->ready)
-		{
-			pool->last_login_failed = true;
-			pool->last_connect_failed = true;
-		}
-		else
+		if (!server->ready) {
+			server->pool->last_login_failed = true;
+			server->pool->last_connect_failed = true;
+		} else
 		{
 			/*
 			 * We did manage to connect and used the connection for query
 			 * cancellation, so to the best of our knowledge we can connect to
 			 * the server, reset last_connect_failed accordingly.
 			 */
-			pool->last_connect_failed = false;
+			server->pool->last_connect_failed = false;
 			send_term = false;
 		}
 		break;
@@ -861,8 +1270,15 @@ void disconnect_server(PgSocket *server, bool notify, const char *reason, ...)
 
 	Assert(server->link == NULL);
 
+	statlist_for_each_safe(cancel_item, &server->canceling_clients, tmp) {
+		PgSocket *cancel_client = container_of(cancel_item, PgSocket, cancel_head);
+		cancel_client->canceled_server = NULL;
+		statlist_remove(&server->canceling_clients, cancel_item);
+	}
+
 	/* notify server and close connection */
-	if (send_term && notify) {
+	if (send_term) {
+		static const uint8_t pkt_term[] = {'X', 0, 0, 0, 4};
 		bool _ignore = sbuf_answer(&server->sbuf, pkt_term, sizeof(pkt_term));
 		(void) _ignore;
 	}
@@ -875,18 +1291,26 @@ void disconnect_server(PgSocket *server, bool notify, const char *reason, ...)
 	free_scram_state(&server->scram_state);
 
 	server->pool->db->connection_count--;
-	server->pool->user->connection_count--;
+	if (server->pool->user) {
+		server->pool->user->connection_count--;
+	}
 
 	change_server_state(server, SV_JUSTFREE);
 	if (!sbuf_close(&server->sbuf))
 		log_noise("sbuf_close failed, retry later");
 }
 
-/* drop client connection */
+/*
+ * A wrapper around disconnect_client_sqlstate()
+ *
+ * The function disconnect_client_sqlstate() inherits the disconnect_client()
+ * content and add a new option that provides a specific SQLSTATE that is
+ * forwarded to client.  PgBouncer used to report SQLSTATE 08P01
+ * (protocol_violation) for all cases but it diverges from what Postgres
+ * reports in some cases.
+ */
 void disconnect_client(PgSocket *client, bool notify, const char *reason, ...)
 {
-	usec_t now = get_cached_time();
-
 	if (reason) {
 		char buf[128];
 		va_list ap;
@@ -894,12 +1318,29 @@ void disconnect_client(PgSocket *client, bool notify, const char *reason, ...)
 		va_start(ap, reason);
 		vsnprintf(buf, sizeof(buf), reason, ap);
 		va_end(ap);
-		reason = buf;
-	}
 
-	if (cf_log_disconnections && reason)
+		disconnect_client_sqlstate(client, notify, NULL, buf);
+	} else {
+		disconnect_client_sqlstate(client, notify, NULL, reason);
+	}
+}
+
+/*
+ * close client connection
+ *
+ * notify=true means to send the reason message as an error to the
+ * client, notify=false means no message is sent.  The latter is for
+ * protocol and communication errors where sending a regular error
+ * message is not possible.
+ */
+void disconnect_client_sqlstate(PgSocket *client, bool notify, const char *sqlstate, const char *reason)
+{
+	usec_t now = get_cached_time();
+
+	if (cf_log_disconnections && reason) {
 		slog_info(client, "closing because: %s (age=%" PRIu64 "s)", reason,
 			  (now - client->connect_time) / USEC);
+	}
 
 	switch (client->state) {
 	case CL_ACTIVE:
@@ -931,27 +1372,71 @@ void disconnect_client(PgSocket *client, bool notify, const char *reason, ...)
 				release_server(server);
 			}
 		}
+		break;
+	case CL_ACTIVE_CANCEL:
+	case CL_WAITING_CANCEL:
+		/*
+		 * During normal operation, cancel clients get closed because their
+		 * linked server finished sending the cancel request. But this is not
+		 * always the case. It's possible for the client to disconnect
+		 * itself. To avoid a reference to freed client object from the linked
+		 * server in such cases, we now unlink any still linked server.
+		 */
+		if (client->link) {
+			PgSocket *server = client->link;
+			server->link = NULL;
+			client->link = NULL;
+			disconnect_server(server, false, "client gave up on cancel request, so we also give up forwarding to server");
+		}
+		/*
+		 * If the cancel request is still linked to the server that it
+		 * cancelled (or wanted to cancel) a query from, this is the time to
+		 * unlink them. The cancel request has finished at this point and we're
+		 * going to free its memory soon, so we don't want references to it
+		 * left behind.
+		 */
+		if (client->canceled_server) {
+			PgSocket *canceled_server = client->canceled_server;
+			statlist_remove(&canceled_server->canceling_clients, &client->cancel_head);
+			client->canceled_server = NULL;
+
+			/*
+			 * If the linked server was waiting until all cancel requests
+			 * targeting it were finished, and we were the last cancel request,
+			 * then we can now safely move the server to the idle state. We
+			 * trigger this by calling release_server again.
+			 */
+			if (canceled_server->state == SV_BEING_CANCELED
+			    && statlist_count(&canceled_server->canceling_clients) == 0) {
+				release_server(canceled_server);
+			}
+		}
+		break;
 	case CL_WAITING:
 	case CL_WAITING_LOGIN:
-	case CL_CANCEL:
 		break;
 	default:
 		fatal("bad client state: %d", client->state);
 	}
 
 	/* send reason to client */
-	if (notify && reason && client->state != CL_CANCEL) {
+	if (notify && reason && client->state != CL_WAITING_CANCEL) {
 		/*
 		 * don't send Ready pkt here, or client won't notice
 		 * closed connection
 		 */
-		send_pooler_error(client, false, true, reason);
+		send_pooler_error(client, false, sqlstate, true, reason);
 	}
 
+	free_header(&client->packet_cb_state.pkt);
 	free_scram_state(&client->scram_state);
 	if (client->login_user && client->login_user->mock_auth) {
 		free(client->login_user);
 		client->login_user = NULL;
+	}
+	if (client->db && client->db->fake) {
+		free(client->db);
+		client->db = NULL;
 	}
 
 	change_client_state(client, CL_JUSTFREE);
@@ -1027,19 +1512,41 @@ static void dns_connect(struct PgSocket *server)
 	struct sockaddr_in6 sa_in6;
 	struct sockaddr *sa;
 	struct PgDatabase *db = server->pool->db;
-	const char *host = db->host;
-	const char *unix_dir;
+	const char *host;
 	int sa_len;
 	int res;
+	char *host_copy = NULL;
+
+	/* host list? */
+	if (db->host && strchr(db->host, ',')) {
+		int count = 1;
+		int n;
+
+		for (const char *p = db->host; *p; p++)
+			if (*p == ',')
+				count++;
+
+		host_copy = xstrdup(db->host);
+		for (host = strtok(host_copy, ","), n = 0; host; host = strtok(NULL, ","), n++)
+			if (server->pool->rrcounter % count == n)
+				break;
+		Assert(host);
+
+		server->pool->rrcounter++;
+	} else {
+		host = db->host;
+	}
 
 	if (!host || host[0] == '/' || host[0] == '@') {
+		const char *unix_dir;
+
 		memset(&sa_un, 0, sizeof(sa_un));
 		sa_un.sun_family = AF_UNIX;
 		unix_dir = host ? host : cf_unix_socket_dir;
 		if (!unix_dir || !*unix_dir) {
 			log_error("unix socket dir not configured: %s", db->name);
 			disconnect_server(server, false, "cannot connect");
-			return;
+			goto cleanup;
 		}
 		snprintf(sa_un.sun_path, sizeof(sa_un.sun_path),
 			 "%s/.s.PGSQL.%d", unix_dir, db->port);
@@ -1052,25 +1559,24 @@ static void dns_connect(struct PgSocket *server)
 			 */
 			sa_len = offsetof(struct sockaddr_un, sun_path) + strlen(sa_un.sun_path);
 			sa_un.sun_path[0] = '\0';
-		}
-		else {
+		} else {
 			sa_len = sizeof(sa_un);
 		}
 		sa = (struct sockaddr *)&sa_un;
 		res = 1;
-	} else if (strchr(host, ':')) {  /* assume IPv6 address on any : in addr */
-		slog_noise(server, "inet6 socket: %s", db->host);
+	} else if (strchr(host, ':')) {	/* assume IPv6 address on any : in addr */
+		slog_noise(server, "inet6 socket: %s", host);
 		memset(&sa_in6, 0, sizeof(sa_in6));
 		sa_in6.sin6_family = AF_INET6;
-		res = inet_pton(AF_INET6, db->host, &sa_in6.sin6_addr);
+		res = inet_pton(AF_INET6, host, &sa_in6.sin6_addr);
 		sa_in6.sin6_port = htons(db->port);
 		sa = (struct sockaddr *)&sa_in6;
 		sa_len = sizeof(sa_in6);
-	} else { /* else try IPv4 */
-		slog_noise(server, "inet socket: %s", db->host);
+	} else {/* else try IPv4 */
+		slog_noise(server, "inet socket: %s", host);
 		memset(&sa_in, 0, sizeof(sa_in));
 		sa_in.sin_family = AF_INET;
-		res = inet_pton(AF_INET, db->host, &sa_in.sin_addr);
+		res = inet_pton(AF_INET, host, &sa_in.sin_addr);
 		sa_in.sin_port = htons(db->port);
 		sa = (struct sockaddr *)&sa_in;
 		sa_len = sizeof(sa_in);
@@ -1079,15 +1585,17 @@ static void dns_connect(struct PgSocket *server)
 	/* if simple parse failed, use DNS */
 	if (res != 1) {
 		struct DNSToken *tk;
-		slog_noise(server, "dns socket: %s", db->host);
+		slog_noise(server, "dns socket: %s", host);
 		/* launch dns lookup */
-		tk = adns_resolve(adns, db->host, dns_callback, server);
+		tk = adns_resolve(adns, host, dns_callback, server);
 		if (tk)
 			server->dns_token = tk;
-		return;
+		goto cleanup;
 	}
 
 	connect_server(server, sa, sa_len);
+cleanup:
+	free(host_copy);
 }
 
 PgSocket *compare_connections_by_time(PgSocket *lhs, PgSocket *rhs)
@@ -1151,13 +1659,29 @@ bool evict_user_connection(PgUser *user)
 	return false;
 }
 
-/* the pool needs new connection, if possible */
-void launch_new_connection(PgPool *pool)
+/*
+ * Launches a new connection if possible.
+ *
+ * Called when the pool needs new connection.
+ *
+ * If `evict_if_needed` is true and the db or user has reached their
+ * connection limits, this method will attempt to evict existing connections
+ * from other users/dbs to make room for the new connection.
+ */
+void launch_new_connection(PgPool *pool, bool evict_if_needed)
 {
 	PgSocket *server;
 	int max;
 
-	/* allow only small number of connection attempts at a time */
+	/*
+	 * Allow only a single connection attempt at a time.
+	 *
+	 * NOTE: If this is ever changed to allow more than a single connection
+	 * attempt at once (which would probably be a good thing), some code needs
+	 * to change that depends on the fact that there's only ever one connection
+	 * attempt at once. At least a little bit below in this function, where
+	 * connections are opened for cancel requests.
+	 */
 	if (!statlist_empty(&pool->new_server_list)) {
 		log_debug("launch_new_connection: already progress");
 		return;
@@ -1175,8 +1699,28 @@ void launch_new_connection(PgPool *pool)
 
 	max = pool_server_count(pool);
 
-	/* when a cancel request is queued allow connections up to twice the pool size */
-	if (!statlist_empty(&pool->cancel_req_list) && max < (2 * pool_pool_size(pool))) {
+	/*
+	 * Peer pools only have a single pool_size.
+	 */
+	if (pool->db->peer_id) {
+		if (max < pool_pool_size(pool))
+			goto force_new;
+
+		log_debug("launch_new_connection: peer pool full (%d >= %d)",
+			  max, pool_pool_size(pool));
+		return;
+	}
+
+	/*
+	 * When a cancel request is queued allow connections up to twice the pool
+	 * size.
+	 *
+	 * NOTE: This logic might seem a bit confusing, because it seems like we'll
+	 * open many connections even if there's only a single cancel request. But
+	 * this works just fine, because we only ever open a single connection at
+	 * once (see top of this function).
+	 */
+	if (!statlist_empty(&pool->waiting_cancel_req_list) && max < (2 * pool_pool_size(pool))) {
 		log_debug("launch_new_connection: bypass pool limitations for cancel request");
 		goto force_new;
 	}
@@ -1195,7 +1739,7 @@ void launch_new_connection(PgPool *pool)
 			}
 		}
 		log_debug("launch_new_connection: pool full (%d >= %d)",
-				max, pool_pool_size(pool));
+			  max, pool_pool_size(pool));
 		return;
 	}
 
@@ -1203,7 +1747,7 @@ allow_new:
 	max = database_max_connections(pool->db);
 	if (max > 0) {
 		/* try to evict unused connections first */
-		while (pool->db->connection_count >= max) {
+		while (evict_if_needed && pool->db->connection_count >= max) {
 			if (!evict_connection(pool->db)) {
 				break;
 			}
@@ -1218,7 +1762,7 @@ allow_new:
 	max = user_max_connections(pool->user);
 	if (max > 0) {
 		/* try to evict unused connection first */
-		while (pool->user->connection_count >= max) {
+		while (evict_if_needed && pool->user->connection_count >= max) {
 			if (!evict_user_connection(pool->user)) {
 				break;
 			}
@@ -1242,10 +1786,13 @@ force_new:
 	server->pool = pool;
 	server->login_user = server->pool->user;
 	server->connect_time = get_cached_time();
+	statlist_init(&server->canceling_clients, "canceling_clients");
 	pool->last_connect_time = get_cached_time();
 	change_server_state(server, SV_LOGIN);
 	pool->db->connection_count++;
-	pool->user->connection_count++;
+	if (pool->user) {
+		pool->user->connection_count++;
+	}
 
 	dns_connect(server);
 }
@@ -1288,6 +1835,18 @@ PgSocket *accept_client(int sock, bool is_unix)
 /* client managed to authenticate, send welcome msg and accept queries */
 bool finish_client_login(PgSocket *client)
 {
+	if (client->db->fake) {
+		if (cf_log_connections)
+			slog_info(client, "login failed: db=%s user=%s", client->db->name, client->login_user->name);
+		disconnect_client(client, true, "no such database: %s", client->db->name);
+		return false;
+	}
+
+	if (client->db->db_disabled) {
+		disconnect_client(client, true, "database \"%s\" is disabled", client->db->name);
+		return false;
+	}
+
 	switch (client->state) {
 	case CL_LOGIN:
 		change_client_state(client, CL_ACTIVE);
@@ -1305,7 +1864,7 @@ bool finish_client_login(PgSocket *client)
 		client->wait_for_welcome = true;
 		pause_client(client);
 		if (cf_pause_mode == P_NONE)
-			launch_new_connection(client->pool);
+			launch_new_connection(client->pool, /* evict_if_needed= */ true);
 		return false;
 	}
 	client->wait_for_welcome = false;
@@ -1319,16 +1878,97 @@ bool finish_client_login(PgSocket *client)
 	return true;
 }
 
-/* client->cancel_key has requested client key */
+static void accept_cancel_request_for_peer(int peer_id, PgSocket *req)
+{
+	PgDatabase *peer = NULL;
+	PgPool *pool = NULL;
+	int ttl = req->cancel_key[7] & CANCELLATION_TTL_MASK;
+
+	if (ttl == 0) {
+		disconnect_client(req, false, "failed to forward cancel request because its TTL was exhausted");
+		return;
+	}
+
+	/*
+	 * Before forwarding the cancel key, we need to decrement the TTL. Now is
+	 * as a good a time as any to do so. We simply subtract 1 from the last
+	 * byte, since the TTL is stored in the least significant bits.
+	 */
+	req->cancel_key[7]--;
+
+	peer = find_peer(peer_id);
+	if (!peer) {
+		disconnect_client(req, false, "could not find peer to forward request to");
+		return;
+	}
+	log_debug("forwarding cancellation request to peer %d", peer_id);
+
+	/*
+	 * When using peering (multiple pgbouncers behind the same load
+	 * balancer), we may receive cancellation messages that were intended
+	 * for another peer via the load balancer. We propagate the
+	 * cancellation via the peer's pool, instead of the server pool.
+	 */
+	pool = get_peer_pool(peer);
+	if (!pool) {
+		disconnect_client(req, false, "out of memory");
+		return;
+	}
+
+	/*
+	 * Attach to the target pool and change state to waiting_cancel. This way
+	 * once a new connection is opened, it's used to forward the cancel
+	 * request.
+	 */
+	req->pool = pool;
+	pause_cancel_request(req);
+
+	/*
+	 * Open a new connection over which the cancel request is forwarded to the
+	 * server.
+	 */
+	launch_new_connection(pool, /* evict_if_needed= */ true);
+}
+
+/*
+ * Accepts a cancellation request, which will eventual cancel the query running
+ * on the client that matches req->client_key
+ */
 void accept_cancel_request(PgSocket *req)
 {
 	struct List *pitem, *citem;
 	PgPool *pool = NULL;
 	PgSocket *server = NULL, *client, *main_client = NULL;
+	bool peering_enabled = false;
 
 	Assert(req->state == CL_LOGIN);
 
-	/* find real client this is for */
+	/*
+	 * PgBouncer peering
+	 */
+	peering_enabled = cf_peer_id > 0;
+	if (peering_enabled) {
+		/*
+		 * Extract the peer id from the cancel key. The peer id is
+		 * stored in the 2nd and 3rd byte.
+		 */
+		int peer_id = req->cancel_key[1] + (req->cancel_key[2] << 8);
+		bool needs_forwarding_to_peer = cf_peer_id != peer_id;
+		if (needs_forwarding_to_peer) {
+			accept_cancel_request_for_peer(peer_id, req);
+			return;
+		}
+
+		/*
+		 * Set the last two bits of the cancel key to 1. This is necessary to
+		 * compare the key from the request to our stored cancel keys, because
+		 * the stored cancel keys always have these TTL bits set to 1.
+		 */
+		req->cancel_key[7] |= CANCELLATION_TTL_MASK;
+	}
+
+
+	/* find the client that has the same cancel_key as this request */
 	statlist_for_each(pitem, &pool_list) {
 		pool = container_of(pitem, PgPool, head);
 		statlist_for_each(citem, &pool->active_client_list) {
@@ -1354,57 +1994,91 @@ found:
 		return;
 	}
 
-	/* not linked client, just drop it then */
-	if (!main_client->link) {
-		/* let administrative cancel be handled elsewhere */
-		if (main_client->pool->db->admin) {
-			disconnect_client(req, false, "cancel request for console client");
-			admin_handle_cancel(main_client);
-			return;
-		}
+	/*
+	 * cancel requests for administrative databases should be handled
+	 * differently from cancel request for normal servers. We should handle
+	 * these directly instead of forwarding them.
+	 */
+	if (main_client->pool->db->admin) {
+		disconnect_client(req, false, "cancel request for console client");
+		admin_handle_cancel(main_client);
+		return;
+	}
 
+	/*
+	 * The client is not linked to a server, which means that no query is
+	 * running that can be cancelled. This likely means the query finished by
+	 * itself before the cancel request arived to pgbouncer.
+	 */
+	if (!main_client->link) {
 		disconnect_client(req, false, "cancel request for idle client");
 
 		return;
 	}
 
-	/* drop the connection, if fails, retry later in justfree list */
-	if (!sbuf_close(&req->sbuf))
-		log_noise("sbuf_close failed, retry later");
-
+	/*
+	 * Link the cancel request and the server on which the query is being
+	 * cancelled in a many-to-one way.
+	 */
 	server = main_client->link;
+	req->canceled_server = server;
+	statlist_append(&server->canceling_clients, &req->cancel_head);
 
-	/* ignore cancel request if the server is setting vars*/
-	if (server->setting_vars) {
-                slog_error(req, "ignore cancel request");
-		disconnect_client(req, false, "don't cancel server during setting vars");
-		return;
-	}
-
-	/* remember server key */
-	memcpy(req->cancel_key, server->cancel_key, 8);
-
-	/* attach to target pool */
+	/*
+	 * Attach to the target pool and change state to waiting_cancel. This way
+	 * once a new connection is opened, it's used to forward the cancel
+	 * request.
+	 */
 	req->pool = pool;
-	change_client_state(req, CL_CANCEL);
+	pause_cancel_request(req);
 
-	/* need fresh connection */
-	launch_new_connection(pool);
+	/*
+	 * Open a new connection over which the cancel request is forwarded to the
+	 * server.
+	 */
+	launch_new_connection(pool, /* evict_if_needed= */ true);
 }
 
-void forward_cancel_request(PgSocket *server)
+bool forward_cancel_request(PgSocket *server)
 {
 	bool res;
-	PgSocket *req = first_socket(&server->pool->cancel_req_list);
+	PgSocket *req = first_socket(&server->pool->waiting_cancel_req_list);
+	bool forwarding_to_peer = server->pool->db->peer_id != 0;
 
-	Assert(req != NULL && req->state == CL_CANCEL);
+	Assert(req != NULL && req->state == CL_WAITING_CANCEL);
 	Assert(server->state == SV_LOGIN);
 
-	SEND_CancelRequest(res, server, req->cancel_key);
-	if (!res)
-		log_warning("sending cancel request failed: %s", strerror(errno));
+	if (!forwarding_to_peer) {
+		/*
+		 * In between accepting the cancel request and receiving an open connection
+		 * the query that was supposed to be cancelled has now completed. This
+		 * becomes a problem when the server is then reused for some other client.
+		 * Because this will mean that the cancel that is forwarded will cancel a
+		 * query from a completely different client than the client it was intended
+		 * for.
+		 */
+		if (!req->canceled_server) {
+			disconnect_client(req, false, "not sending cancel request for client that is now idle");
+			return false;
+		}
+	}
 
-	change_client_state(req, CL_JUSTFREE);
+	server->link = req;
+	req->link = server;
+
+	if (forwarding_to_peer) {
+		SEND_CancelRequest(res, server, req->cancel_key);
+	} else {
+		SEND_CancelRequest(res, server, req->canceled_server->cancel_key);
+	}
+	if (!res) {
+		slog_warning(req, "sending cancel request failed: %s", strerror(errno));
+		disconnect_client(req, false, "failed to send cancel request");
+		return false;
+	}
+	slog_debug(req, "started sending cancel request");
+	change_client_state(req, CL_ACTIVE_CANCEL);
+	return true;
 }
 
 bool use_client_socket(int fd, PgAddr *addr,
@@ -1537,6 +2211,7 @@ bool use_server_socket(int fd, PgAddr *addr,
 	server->login_user = user;
 	server->connect_time = server->request_time = get_cached_time();
 	server->query_start = 0;
+	statlist_init(&server->canceling_clients, "canceling_clients");
 
 	fill_remote_addr(server, fd, pga_is_unix(addr));
 	fill_local_addr(server, fd, pga_is_unix(addr));
@@ -1569,20 +2244,25 @@ void for_each_server(PgPool *pool, void (*func)(PgSocket *sk))
 {
 	struct List *item;
 
-	statlist_for_each(item, &pool->idle_server_list)
+	statlist_for_each(item, &pool->idle_server_list) {
 		func(container_of(item, PgSocket, head));
+	}
 
-	statlist_for_each(item, &pool->used_server_list)
+	statlist_for_each(item, &pool->used_server_list) {
 		func(container_of(item, PgSocket, head));
+	}
 
-	statlist_for_each(item, &pool->tested_server_list)
+	statlist_for_each(item, &pool->tested_server_list) {
 		func(container_of(item, PgSocket, head));
+	}
 
-	statlist_for_each(item, &pool->active_server_list)
+	statlist_for_each(item, &pool->active_server_list) {
 		func(container_of(item, PgSocket, head));
+	}
 
-	statlist_for_each(item, &pool->new_server_list)
+	statlist_for_each(item, &pool->new_server_list) {
 		func(container_of(item, PgSocket, head));
+	}
 }
 
 static void for_each_server_filtered(PgPool *pool, void (*func)(PgSocket *sk), bool (*filter)(PgSocket *sk, void *arg), void *filter_arg)
@@ -1698,7 +2378,8 @@ void tag_autodb_dirty(void)
 	}
 }
 
-static bool server_remote_addr_filter(PgSocket *sk, void *arg) {
+static bool server_remote_addr_filter(PgSocket *sk, void *arg)
+{
 	PgAddr *addr = arg;
 
 	return (pga_cmp_addr(&sk->remote_addr, addr) == 0);
@@ -1720,7 +2401,6 @@ void tag_host_addr_dirty(const char *host, const struct sockaddr *sa)
 		}
 	}
 }
-
 
 /* move objects from justfree_* to free_* lists */
 void reuse_just_freed_objects(void)
@@ -1771,6 +2451,20 @@ void objects_cleanup(void)
 		db = container_of(item, PgDatabase, head);
 		kill_database(db);
 	}
+	statlist_for_each_safe(item, &peer_list, tmp) {
+		PgDatabase *peer = container_of(item, PgDatabase, head);
+		kill_peer(peer);
+	}
+
+	statlist_for_each_safe(item, &justfree_server_list, tmp) {
+		PgSocket *server = container_of(item, PgSocket, head);
+		server_free(server);
+	}
+
+	statlist_for_each_safe(item, &justfree_client_list, tmp) {
+		PgSocket *client = container_of(item, PgSocket, head);
+		client_free(client);
+	}
 
 	memset(&login_client_list, 0, sizeof login_client_list);
 	memset(&user_list, 0, sizeof user_list);
@@ -1785,10 +2479,20 @@ void objects_cleanup(void)
 	client_cache = NULL;
 	slab_destroy(db_cache);
 	db_cache = NULL;
+	slab_destroy(peer_cache);
+	peer_cache = NULL;
+	slab_destroy(peer_pool_cache);
+	peer_pool_cache = NULL;
 	slab_destroy(pool_cache);
 	pool_cache = NULL;
 	slab_destroy(user_cache);
 	user_cache = NULL;
 	slab_destroy(iobuf_cache);
 	iobuf_cache = NULL;
+	slab_destroy(outstanding_request_cache);
+	outstanding_request_cache = NULL;
+	slab_destroy(var_list_cache);
+	var_list_cache = NULL;
+	slab_destroy(server_prepared_statement_cache);
+	server_prepared_statement_cache = NULL;
 }

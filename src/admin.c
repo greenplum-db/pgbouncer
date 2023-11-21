@@ -25,12 +25,15 @@
 #include <usual/regex.h>
 #include <usual/netdb.h>
 #include <usual/endian.h>
+#include <usual/safeio.h>
+#include <usual/slab.h>
+#include <usual/strpool.h>
 
 /* regex elements */
-#define WS0	"[ \t\n\r]*"
-#define WS1	"[ \t\n\r]+"
-#define WORD	"(\"([^\"]+|\"\")*\"|[0-9a-z_]+)"
-#define STRING	"('([^']|'')*')"
+#define WS0     "[ \t\n\r]*"
+#define WS1     "[ \t\n\r]+"
+#define WORD    "(\"([^\"]+|\"\")*\"|[0-9a-z_]+)"
+#define STRING  "('([^']|'')*')"
 
 /* possible max + 1 */
 #define MAX_GROUPS 10
@@ -49,15 +52,15 @@ struct cmd_lookup {
 
 /* CMD [arg]; */
 static const char cmd_normal_rx[] =
-"^" WS0 WORD "(" WS1 WORD ")?" WS0 "(;" WS0 ")?$";
+	"^" WS0 WORD "(" WS1 WORD ")?" WS0 "(;" WS0 ")?$";
 
 /* SET with simple value */
 static const char cmd_set_word_rx[] =
-"^" WS0 "set" WS1 WORD WS0 "(=|to)" WS0 WORD WS0 "(;" WS0 ")?$";
+	"^" WS0 "set" WS1 WORD WS0 "(=|to)" WS0 WORD WS0 "(;" WS0 ")?$";
 
 /* SET with quoted value */
 static const char cmd_set_str_rx[] =
-"^" WS0 "set" WS1 WORD WS0 "(=|to)" WS0 STRING WS0 "(;" WS0 ")?$";
+	"^" WS0 "set" WS1 WORD WS0 "(=|to)" WS0 STRING WS0 "(;" WS0 ")?$";
 
 /* compiled regexes */
 static regex_t rc_cmd;
@@ -105,7 +108,7 @@ bool admin_error(PgSocket *admin, const char *fmt, ...)
 
 	log_error("%s", str);
 	if (admin)
-		res = send_pooler_error(admin, true, false, str);
+		res = send_pooler_error(admin, true, NULL, false, str);
 	return res;
 }
 
@@ -192,8 +195,9 @@ static bool fake_show(PgSocket *admin, const char *name)
 			pktbuf_write_RowDescription(buf, "s", p->name);
 			pktbuf_write_DataRow(buf, "s", p->value);
 			admin_flush(admin, buf, "SHOW");
-		} else
+		} else {
 			admin_error(admin, "no mem");
+		}
 	}
 	return got;
 }
@@ -216,8 +220,9 @@ static bool fake_set(PgSocket *admin, const char *key, const char *val)
 		if (buf) {
 			pktbuf_write_Notice(buf, "SET ignored");
 			admin_flush(admin, buf, "SET");
-		} else
+		} else {
 			admin_error(admin, "no mem");
+		}
 	}
 	return got;
 }
@@ -235,6 +240,9 @@ static bool admin_set(PgSocket *admin, const char *key, const char *val)
 		ok = set_config_param(key, val);
 		if (ok) {
 			PktBuf *buf = pktbuf_dynamic(256);
+			if (!buf) {
+				return admin_error(admin, "no mem");
+			}
 			if (strstr(key, "_tls_") != NULL) {
 				if (!sbuf_tls_setup())
 					pktbuf_write_Notice(buf, "TLS settings could not be applied, still using old configuration");
@@ -244,8 +252,9 @@ static bool admin_set(PgSocket *admin, const char *key, const char *val)
 		} else {
 			return admin_error(admin, "SET failed");
 		}
-	} else
+	} else {
 		return admin_error(admin, "admin access needed");
+	}
 }
 
 /* send a row with sendmsg, optionally attaching a fd */
@@ -273,11 +282,11 @@ static bool send_one_fd(PgSocket *admin,
 	struct PktBuf *pkt = pktbuf_temp();
 
 	pktbuf_write_DataRow(pkt, "issssiqisssssbb",
-		      fd, task, user, db, addr, port, ckey, link,
-		      client_enc, std_strings, datestyle, timezone,
-		      password,
-		      scram_client_key_len, scram_client_key,
-		      scram_server_key_len, scram_server_key);
+			     fd, task, user, db, addr, port, ckey, link,
+			     client_enc, std_strings, datestyle, timezone,
+			     password,
+			     scram_client_key_len, scram_client_key,
+			     scram_server_key_len, scram_server_key);
 	if (pkt->failed)
 		return false;
 	iovec.iov_base = pkt->buf;
@@ -401,19 +410,6 @@ static bool show_fds_from_list(PgSocket *admin, struct StatList *list)
 	return res;
 }
 
-static PgDatabase *find_or_register_database(PgSocket *admin, const char *name)
-{
-	PgDatabase *db = find_database(name);
-	if (db == NULL) {
-		db = register_auto_database(name);
-		if (db != NULL) {
-			slog_info(admin,
-			          "registered new auto-database: %s", name);
-		}
-	}
-	return db;
-}
-
 /*
  * Command: SHOW FDS
  *
@@ -444,13 +440,13 @@ static bool admin_show_fds(PgSocket *admin, const char *arg)
 	 * send resultset
 	 */
 	SEND_RowDescription(res, admin, "issssiqisssssbb",
-				 "fd", "task",
-				 "user", "database",
-				 "addr", "port",
-				 "cancel", "link",
-				 "client_encoding", "std_strings",
-				 "datestyle", "timezone", "password",
-				 "scram_client_key", "scram_server_key");
+			    "fd", "task",
+			    "user", "database",
+			    "addr", "port",
+			    "cancel", "link",
+			    "client_encoding", "std_strings",
+			    "datestyle", "timezone", "password",
+			    "scram_client_key", "scram_server_key");
 	if (res)
 		res = show_pooler_fds(admin);
 
@@ -525,6 +521,32 @@ static bool admin_show_databases(PgSocket *admin, const char *arg)
 	return true;
 }
 
+/* Command: SHOW PEERS */
+static bool admin_show_peers(PgSocket *admin, const char *arg)
+{
+	PgDatabase *peer;
+	struct List *item;
+	PktBuf *buf;
+
+	buf = pktbuf_dynamic(256);
+	if (!buf) {
+		admin_error(admin, "no mem");
+		return true;
+	}
+
+	pktbuf_write_RowDescription(buf, "isii",
+				    "peer_id", "host", "port", "pool_size");
+	statlist_for_each(item, &peer_list) {
+		peer = container_of(item, PgDatabase, head);
+
+		pktbuf_write_DataRow(buf, "isii",
+				     peer->peer_id, peer->host, peer->port,
+				     peer->pool_size >= 0 ? peer->pool_size : cf_default_pool_size);
+	}
+	admin_flush(admin, buf, "SHOW");
+	return true;
+}
+
 
 /* Command: SHOW LISTS */
 static bool admin_show_lists(PgSocket *admin, const char *arg)
@@ -538,7 +560,9 @@ static bool admin_show_lists(PgSocket *admin, const char *arg)
 #define SENDLIST(name, size) pktbuf_write_DataRow(buf, "si", (name), (size))
 	SENDLIST("databases", statlist_count(&database_list));
 	SENDLIST("users", statlist_count(&user_list));
+	SENDLIST("peers", statlist_count(&peer_list));
 	SENDLIST("pools", statlist_count(&pool_list));
+	SENDLIST("peer_pools", statlist_count(&peer_pool_list));
 	SENDLIST("free_clients", slab_free_count(client_cache));
 	SENDLIST("used_clients", slab_active_count(client_cache));
 	SENDLIST("login_clients", statlist_count(&login_client_list));
@@ -585,8 +609,8 @@ static bool admin_show_users(PgSocket *admin, const char *arg)
 	return true;
 }
 
-#define SKF_STD "sssssisiTTiiissis"
-#define SKF_DBG "sssssisiTTiiissisiiiiiii"
+#define SKF_STD "sssssisiTTiiississi"
+#define SKF_DBG "sssssisiTTiiississiiiiiiii"
 
 static void socket_header(PktBuf *buf, bool debug)
 {
@@ -596,7 +620,9 @@ static void socket_header(PktBuf *buf, bool debug)
 				    "connect_time", "request_time",
 				    "wait", "wait_us", "close_needed",
 				    "ptr", "link", "remote_pid", "tls",
-				    /* debug follows */
+				    "application_name",
+				    "prepared_statements",
+					/* debug follows */
 				    "recv_pos", "pkt_pos", "pkt_remain",
 				    "send_pos", "send_remain",
 				    "pkt_avail", "send_avail");
@@ -611,10 +637,13 @@ static void socket_row(PktBuf *buf, PgSocket *sk, const char *state, bool debug)
 {
 	int pkt_avail = 0, send_avail = 0;
 	int remote_pid;
+	int prepared_statement_count = 0;
 	char ptrbuf[128], linkbuf[128];
 	char l_addr[PGADDR_BUF], r_addr[PGADDR_BUF];
 	IOBuf *io = sk->sbuf.io;
 	char infobuf[96] = "";
+	VarCache *v = &sk->vars;
+	const struct PStr *application_name = v->var_list[VAppName];
 	usec_t now = get_cached_time();
 	usec_t wait_time = sk->query_start ? now - sk->query_start : 0;
 
@@ -644,10 +673,15 @@ static void socket_row(PktBuf *buf, PgSocket *sk, const char *state, bool debug)
 	if (sk->sbuf.tls)
 		tls_get_connection_info(sk->sbuf.tls, infobuf, sizeof infobuf);
 
+	if (is_server_socket(sk))
+		prepared_statement_count = HASH_COUNT(sk->server_prepared_statements);
+	else
+		prepared_statement_count = HASH_COUNT(sk->client_prepared_statements);
+
 	pktbuf_write_DataRow(buf, debug ? SKF_DBG : SKF_STD,
-			     is_server_socket(sk) ? "S" :"C",
+			     is_server_socket(sk) ? "S" : "C",
 			     sk->login_user ? sk->login_user->name : "(nouser)",
-			     sk->pool ? sk->pool->db->name : "(nodb)",
+			     sk->pool && !sk->pool->db->peer_id ? sk->pool->db->name : "(nodb)",
 			     state, r_addr, pga_port(&sk->remote_addr),
 			     l_addr, pga_port(&sk->local_addr),
 			     sk->connect_time,
@@ -656,7 +690,9 @@ static void socket_row(PktBuf *buf, PgSocket *sk, const char *state, bool debug)
 			     (int)(wait_time % USEC),
 			     sk->close_needed,
 			     ptrbuf, linkbuf, remote_pid, infobuf,
-			     /* debug */
+			     application_name ? application_name->str : "",
+			     prepared_statement_count,
+				/* debug */
 			     io ? io->recv_pos : 0,
 			     io ? io->parse_pos : 0,
 			     sk->sbuf.pkt_remain,
@@ -695,6 +731,15 @@ static bool admin_show_clients(PgSocket *admin, const char *arg)
 
 		show_socket_list(buf, &pool->active_client_list, "active", false);
 		show_socket_list(buf, &pool->waiting_client_list, "waiting", false);
+		show_socket_list(buf, &pool->active_cancel_req_list, "active_cancel_req", false);
+		show_socket_list(buf, &pool->waiting_cancel_req_list, "waiting_cancel_req", false);
+	}
+
+	statlist_for_each(item, &peer_pool_list) {
+		pool = container_of(item, PgPool, head);
+
+		show_socket_list(buf, &pool->active_cancel_req_list, "active_cancel_req", false);
+		show_socket_list(buf, &pool->waiting_cancel_req_list, "waiting_cancel_req", false);
 	}
 
 	admin_flush(admin, buf, "SHOW");
@@ -722,6 +767,13 @@ static bool admin_show_servers(PgSocket *admin, const char *arg)
 		show_socket_list(buf, &pool->used_server_list, "used", false);
 		show_socket_list(buf, &pool->tested_server_list, "tested", false);
 		show_socket_list(buf, &pool->new_server_list, "new", false);
+		show_socket_list(buf, &pool->active_cancel_server_list, "active_cancel", false);
+		show_socket_list(buf, &pool->being_canceled_server_list, "being_canceled", false);
+	}
+	statlist_for_each(item, &peer_pool_list) {
+		pool = container_of(item, PgPool, head);
+		show_socket_list(buf, &pool->new_server_list, "new", false);
+		show_socket_list(buf, &pool->active_cancel_server_list, "active_cancel", false);
 	}
 	admin_flush(admin, buf, "SHOW");
 	return true;
@@ -816,11 +868,15 @@ static bool admin_show_pools(PgSocket *admin, const char *arg)
 		admin_error(admin, "no mem");
 		return true;
 	}
-	pktbuf_write_RowDescription(buf, "ssiiiiiiiiiis",
+	pktbuf_write_RowDescription(buf, "ssiiiiiiiiiiiiis",
 				    "database", "user",
 				    "cl_active", "cl_waiting",
-				    "cl_cancel_req",
-				    "sv_active", "sv_idle",
+				    "cl_active_cancel_req",
+				    "cl_waiting_cancel_req",
+				    "sv_active",
+				    "sv_active_cancel",
+				    "sv_being_canceled",
+				    "sv_idle",
 				    "sv_used", "sv_tested",
 				    "sv_login", "maxwait",
 				    "maxwait_us", "pool_mode");
@@ -829,17 +885,20 @@ static bool admin_show_pools(PgSocket *admin, const char *arg)
 		waiter = first_socket(&pool->waiting_client_list);
 		max_wait = (waiter && waiter->query_start) ? now - waiter->query_start : 0;
 		pool_mode = pool_pool_mode(pool);
-		pktbuf_write_DataRow(buf, "ssiiiiiiiiiis",
+		pktbuf_write_DataRow(buf, "ssiiiiiiiiiiiiis",
 				     pool->db->name, pool->user->name,
 				     statlist_count(&pool->active_client_list),
 				     statlist_count(&pool->waiting_client_list),
-				     statlist_count(&pool->cancel_req_list),
+				     statlist_count(&pool->active_cancel_req_list),
+				     statlist_count(&pool->waiting_cancel_req_list),
 				     statlist_count(&pool->active_server_list),
+				     statlist_count(&pool->active_cancel_server_list),
+				     statlist_count(&pool->being_canceled_server_list),
 				     statlist_count(&pool->idle_server_list),
 				     statlist_count(&pool->used_server_list),
 				     statlist_count(&pool->tested_server_list),
 				     statlist_count(&pool->new_server_list),
-				     /* how long is the oldest client waited */
+					/* how long is the oldest client waited */
 				     (int)(max_wait / USEC),
 				     (int)(max_wait % USEC),
 				     cf_get_lookup(&cv));
@@ -847,6 +906,38 @@ static bool admin_show_pools(PgSocket *admin, const char *arg)
 	admin_flush(admin, buf, "SHOW");
 	return true;
 }
+
+/* Command: SHOW PEER_POOLS */
+static bool admin_show_peer_pools(PgSocket *admin, const char *arg)
+{
+	struct List *item;
+	PgPool *pool;
+	PktBuf *buf;
+
+	buf = pktbuf_dynamic(256);
+	if (!buf) {
+		admin_error(admin, "no mem");
+		return true;
+	}
+	pktbuf_write_RowDescription(buf, "iiiii",
+				    "peer_id",
+				    "cl_active_cancel_req",
+				    "cl_waiting_cancel_req",
+				    "sv_active_cancel",
+				    "sv_login");
+	statlist_for_each(item, &peer_pool_list) {
+		pool = container_of(item, PgPool, head);
+		pktbuf_write_DataRow(buf, "iiiii",
+				     pool->db->peer_id,
+				     statlist_count(&pool->active_cancel_req_list),
+				     statlist_count(&pool->waiting_cancel_req_list),
+				     statlist_count(&pool->active_cancel_server_list),
+				     statlist_count(&pool->new_server_list));
+	}
+	admin_flush(admin, buf, "SHOW");
+	return true;
+}
+
 
 static void slab_stat_cb(void *arg, const char *slab_name,
 			 unsigned size, unsigned free,
@@ -872,6 +963,28 @@ static bool admin_show_mem(PgSocket *admin, const char *arg)
 				    "size", "used", "free", "memtotal");
 	slab_stats(slab_stat_cb, buf);
 	admin_flush(admin, buf, "SHOW");
+	return true;
+}
+
+/* Command: SHOW STATE */
+static bool admin_show_state(PgSocket *admin, const char *arg)
+{
+	PktBuf *buf;
+
+	buf = pktbuf_dynamic(64);
+	if (!buf) {
+		admin_error(admin, "no mem");
+		return true;
+	}
+
+	pktbuf_write_RowDescription(buf, "ss", "key", "value");
+
+	pktbuf_write_DataRow(buf, "ss", "active", (cf_pause_mode == P_NONE) ? "yes" : "no");
+	pktbuf_write_DataRow(buf, "ss", "paused", (cf_pause_mode == P_PAUSE) ? "yes" : "no");
+	pktbuf_write_DataRow(buf, "ss", "suspended", (cf_pause_mode == P_SUSPEND) ? "yes" : "no");
+
+	admin_flush(admin, buf, "SHOW");
+
 	return true;
 }
 
@@ -999,7 +1112,7 @@ static bool admin_cmd_shutdown(PgSocket *admin, const char *arg)
 	 * before closing open sockets.
 	 */
 	log_info("SHUTDOWN command issued");
-	cf_shutdown = 2;
+	cf_shutdown = SHUTDOWN_IMMEDIATE;
 	event_base_loopbreak(pgb_event_base);
 
 	return true;
@@ -1015,7 +1128,7 @@ static void full_resume(void)
 	/* avoid surprise later if cf_shutdown stays set */
 	if (cf_shutdown) {
 		log_info("canceling shutdown");
-		cf_shutdown = 0;
+		cf_shutdown = SHUTDOWN_NONE;
 	}
 }
 
@@ -1215,41 +1328,41 @@ static bool admin_cmd_wait_close(PgSocket *admin, const char *arg)
 	if (!admin->admin_user)
 		return admin_error(admin, "admin access needed");
 
-       if (!arg[0]) {
-	       struct List *item;
-	       PgPool *pool;
-	       int active = 0;
+	if (!arg[0]) {
+		struct List *item;
+		PgPool *pool;
+		int active = 0;
 
-	       log_info("WAIT_CLOSE command issued");
-	       statlist_for_each(item, &pool_list) {
-		       PgDatabase *db;
+		log_info("WAIT_CLOSE command issued");
+		statlist_for_each(item, &pool_list) {
+			PgDatabase *db;
 
-		       pool = container_of(item, PgPool, head);
-		       db = pool->db;
-		       db->db_wait_close = true;
-		       active += count_db_active(db);
-	       }
-	       if (active > 0)
-		       admin->wait_for_response = true;
-	       else
-		       return admin_ready(admin, "WAIT_CLOSE");
-       } else {
-	       PgDatabase *db;
+			pool = container_of(item, PgPool, head);
+			db = pool->db;
+			db->db_wait_close = true;
+			active += count_db_active(db);
+		}
+		if (active > 0)
+			admin->wait_for_response = true;
+		else
+			return admin_ready(admin, "WAIT_CLOSE");
+	} else {
+		PgDatabase *db;
 
-	       log_info("WAIT_CLOSE '%s' command issued", arg);
-	       db = find_or_register_database(admin, arg);
-	       if (db == NULL)
-		       return admin_error(admin, "no such database: %s", arg);
-	       if (db == admin->pool->db)
-		       return admin_error(admin, "cannot wait in admin db: %s", arg);
-	       db->db_wait_close = true;
-	       if (count_db_active(db) > 0)
-		       admin->wait_for_response = true;
-	       else
-		       return admin_ready(admin, "WAIT_CLOSE");
-       }
+		log_info("WAIT_CLOSE '%s' command issued", arg);
+		db = find_or_register_database(admin, arg);
+		if (db == NULL)
+			return admin_error(admin, "no such database: %s", arg);
+		if (db == admin->pool->db)
+			return admin_error(admin, "cannot wait in admin db: %s", arg);
+		db->db_wait_close = true;
+		if (count_db_active(db) > 0)
+			admin->wait_for_response = true;
+		else
+			return admin_ready(admin, "WAIT_CLOSE");
+	}
 
-       return true;
+	return true;
 }
 
 /* extract substring from regex group */
@@ -1281,7 +1394,7 @@ static bool copy_arg(const char *src, regmatch_t *glist,
 	/* copy and unquote */
 	if (*s == qchar) {
 		for (i = 1; i < len - 1; i++) {
-			if (s[i] == qchar && s[i+1] == qchar)
+			if (s[i] == qchar && s[i + 1] == qchar)
 				i++;
 			*d++ = s[i];
 		}
@@ -1297,24 +1410,25 @@ static bool admin_show_help(PgSocket *admin, const char *arg)
 {
 	bool res;
 	SEND_generic(res, admin, 'N',
-		"sssss",
-		"SNOTICE", "C00000", "MConsole usage",
-		"D\n\tSHOW HELP|CONFIG|DATABASES"
-		"|POOLS|CLIENTS|SERVERS|USERS|VERSION\n"
-		"\tSHOW FDS|SOCKETS|ACTIVE_SOCKETS|LISTS|MEM\n"
-		"\tSHOW DNS_HOSTS|DNS_ZONES\n"
-		"\tSHOW STATS|STATS_TOTALS|STATS_AVERAGES|TOTALS\n"
-		"\tSET key = arg\n"
-		"\tRELOAD\n"
-		"\tPAUSE [<db>]\n"
-		"\tRESUME [<db>]\n"
-		"\tDISABLE <db>\n"
-		"\tENABLE <db>\n"
-		"\tRECONNECT [<db>]\n"
-		"\tKILL <db>\n"
-		"\tSUSPEND\n"
-		"\tSHUTDOWN\n",
-		"\tWAIT_CLOSE [<db>]", "");
+		     "sssss",
+		     "SNOTICE", "C00000", "MConsole usage",
+		     "D\n\tSHOW HELP|CONFIG|DATABASES"
+		     "|POOLS|CLIENTS|SERVERS|USERS|VERSION\n"
+		     "\tSHOW PEERS|PEER_POOLS\n"
+		     "\tSHOW FDS|SOCKETS|ACTIVE_SOCKETS|LISTS|MEM|STATE\n"
+		     "\tSHOW DNS_HOSTS|DNS_ZONES\n"
+		     "\tSHOW STATS|STATS_TOTALS|STATS_AVERAGES|TOTALS\n"
+		     "\tSET key = arg\n"
+		     "\tRELOAD\n"
+		     "\tPAUSE [<db>]\n"
+		     "\tRESUME [<db>]\n"
+		     "\tDISABLE <db>\n"
+		     "\tENABLE <db>\n"
+		     "\tRECONNECT [<db>]\n"
+		     "\tKILL <db>\n"
+		     "\tSUSPEND\n"
+		     "\tSHUTDOWN\n"
+		     "\tWAIT_CLOSE [<db>]", "");
 	if (res)
 		res = admin_ready(admin, "SHOW");
 	return res;
@@ -1366,6 +1480,8 @@ static struct cmd_lookup show_map [] = {
 	{"fds", admin_show_fds},
 	{"help", admin_show_help},
 	{"lists", admin_show_lists},
+	{"peers", admin_show_peers},
+	{"peer_pools", admin_show_peer_pools},
 	{"pools", admin_show_pools},
 	{"servers", admin_show_servers},
 	{"sockets", admin_show_sockets},
@@ -1379,6 +1495,7 @@ static struct cmd_lookup show_map [] = {
 	{"mem", admin_show_mem},
 	{"dns_hosts", admin_show_dns_hosts},
 	{"dns_zones", admin_show_dns_zones},
+	{"state", admin_show_state},
 	{NULL, NULL}
 };
 
@@ -1441,8 +1558,9 @@ static bool admin_parse_query(PgSocket *admin, const char *q)
 		if (!ok)
 			goto failed;
 		res = admin_set(admin, arg, val);
-	} else
+	} else {
 		res = syntax_error(admin);
+	}
 done:
 	current_query = NULL;
 	if (!res)
@@ -1479,9 +1597,19 @@ bool admin_handle_client(PgSocket *admin, PktHdr *pkt)
 	case 'X':
 		disconnect_client(admin, false, "close req");
 		break;
+	case 'P':
+	case 'B':
+	case 'E':
+		/*
+		 * Effectively the same as the default case, but give
+		 * a more helpful error message in these cases.
+		 */
+		admin_error(admin, "extended query protocol not supported by admin console");
+		disconnect_client(admin, true, "bad packet");
+		break;
 	default:
-		admin_error(admin, "unsupported pkt type: %d", pkt_desc(pkt));
-		disconnect_client(admin, true, "bad pkt");
+		admin_error(admin, "unsupported packet type for admin console: %d", pkt_desc(pkt));
+		disconnect_client(admin, true, "bad packet");
 		break;
 	}
 	return false;
@@ -1504,12 +1632,12 @@ bool admin_pre_login(PgSocket *client, const char *username)
 
 		res = getpeereid(sbuf_socket(&client->sbuf), &peer_uid, &peer_gid);
 		if (res >= 0 && peer_uid == getuid()
-			&& strcmp("pgbouncer", username) == 0)
-		{
+		    && strcmp("pgbouncer", username) == 0) {
 			client->login_user = admin_pool->db->forced_user;
 			client->own_user = true;
 			client->admin_user = true;
-			slog_info(client, "pgbouncer access from unix socket");
+			if (cf_log_connections)
+				slog_info(client, "pgbouncer access from unix socket");
 			return true;
 		}
 	}
@@ -1643,9 +1771,9 @@ void admin_pause_done(void)
 			res = admin_ready(admin, "SUSPEND");
 			break;
 		default:
-			if (count_paused_databases() > 0)
+			if (count_paused_databases() > 0) {
 				res = admin_ready(admin, "PAUSE");
-			else {
+			} else {
 				/* FIXME */
 				fatal("admin_pause_done: bad state");
 				res = false;
@@ -1659,8 +1787,7 @@ void admin_pause_done(void)
 	}
 
 	if (statlist_empty(&admin_pool->active_client_list)
-	    && cf_pause_mode == P_SUSPEND)
-	{
+	    && cf_pause_mode == P_SUSPEND) {
 		log_info("admin disappeared when suspended, doing RESUME");
 		cf_pause_mode = P_NONE;
 		resume_all();

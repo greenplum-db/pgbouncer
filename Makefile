@@ -10,6 +10,7 @@ pgbouncer_SOURCES = \
 	src/hba.c \
 	src/janitor.c \
 	src/loader.c \
+	src/messages.c \
 	src/main.c \
 	src/objects.c \
 	src/pam.c \
@@ -17,6 +18,7 @@ pgbouncer_SOURCES = \
 	src/pktbuf.c \
 	src/pooler.c \
 	src/proto.c \
+	src/prepare.c \
 	src/sbuf.c \
 	src/scram.c \
 	src/server.c \
@@ -38,12 +40,14 @@ pgbouncer_SOURCES = \
 	include/iobuf.h \
 	include/janitor.h \
 	include/loader.h \
+	include/messages.h \
 	include/objects.h \
 	include/pam.h \
 	include/auth_ldap.h \
 	include/pktbuf.h \
 	include/pooler.h \
 	include/proto.h \
+	include/prepare.h \
 	include/sbuf.h \
 	include/scram.h \
 	include/server.h \
@@ -57,18 +61,26 @@ pgbouncer_SOURCES = \
 	include/common/postgres_compat.h \
 	include/common/saslprep.h \
 	include/common/scram-common.h \
+	include/common/unicode_combining_table.h \
 	include/common/unicode_norm.h \
-	include/common/unicode_norm_table.h
+	include/common/unicode_norm_table.h \
+	include/common/uthash_lowercase.h
 
-COMMON_CFLAGS = -g -Wall -DLDAP_DEPRECATED
-pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS) $(COMMON_CFLAGS)
+UTHASH = uthash
+pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS)
+pgbouncer_CPPFLAGS += -I$(UTHASH)/src
 
 # include libusual sources directly
 AM_FEATURES = libusual
 pgbouncer_EMBED_LIBUSUAL = 1
 
 # docs to install as-is
-dist_doc_DATA = README.md NEWS.md etc/pgbouncer.ini etc/userlist.txt
+dist_doc_DATA = README.md NEWS.md \
+	etc/pgbouncer-minimal.ini \
+	etc/pgbouncer.ini \
+	etc/pgbouncer.service \
+	etc/pgbouncer.socket \
+	etc/userlist.txt
 
 #DISTCLEANFILES = config.mak config.status lib/usual/config.h config.log
 
@@ -77,10 +89,12 @@ dist_doc_DATA = README.md NEWS.md etc/pgbouncer.ini etc/userlist.txt
 
 # files in tgz
 EXTRA_DIST = AUTHORS COPYRIGHT Makefile config.mak.in config.sub config.guess \
+	     pyproject.toml requirements.txt \
 	     install-sh autogen.sh configure configure.ac \
 	     etc/mkauth.py etc/optscan.sh etc/example.debian.init.sh \
 	     win32/Makefile \
-	     $(LIBUSUAL_DIST)
+	     $(LIBUSUAL_DIST) \
+	     $(UTHASH_DIST) \
 
 # libusual files (FIXME: list should be provided by libusual...)
 LIBUSUAL_DIST = $(filter-out %/config.h, $(sort $(wildcard \
@@ -94,6 +108,9 @@ LIBUSUAL_DIST = $(filter-out %/config.h, $(sort $(wildcard \
 		lib/README lib/COPYRIGHT \
 		lib/find_modules.sh )))
 
+UTHASH_DIST = $(UTHASH)/src/uthash.h \
+              $(UTHASH)/LICENSE
+
 pgbouncer_LDFLAGS := $(TLS_LDFLAGS)
 pgbouncer_LDADD := $(CARES_LIBS) $(LIBEVENT_LIBS) $(TLS_LIBS) $(LIBS)
 LIBS :=
@@ -102,7 +119,7 @@ LIBS :=
 # win32
 #
 
-EXTRA_pgbouncer_SOURCES = win32/win32support.c win32/win32support.h
+EXTRA_pgbouncer_SOURCES = win32/win32support.c win32/win32support.h win32/win32ver.rc
 EXTRA_PROGRAMS = pgbevent
 ifeq ($(PORTNAME),win32)
 pgbouncer_CPPFLAGS += -Iwin32
@@ -118,7 +135,7 @@ pgbevent_LINK = $(CC) -shared -Wl,--export-all-symbols -Wl,--add-stdcall-alias -
 # .rc->.o
 AM_LANGUAGES = RC
 AM_LANG_RC_SRCEXTS = .rc
-AM_LANG_RC_COMPILE = $(WINDRES) $< -o $@ --include-dir=$(srcdir)/win32
+AM_LANG_RC_COMPILE = $(WINDRES) $< -o $@ --include-dir=$(srcdir)/win32 --include-dir=lib
 AM_LANG_RC_LINK = false
 
 #
@@ -134,8 +151,17 @@ config.mak:
 	@echo "Please run ./configure"
 	@exit 1
 
+PYTEST = $(shell command -v pytest || echo '$(PYTHON) -m pytest')
+
+CONCURRENCY = auto
+
 check: all
 	etc/optscan.sh
+	if [ $(CONCURRENCY) = 1 ]; then \
+		PYTHONIOENCODING=utf8 $(PYTEST); \
+	else \
+		PYTHONIOENCODING=utf8 $(PYTEST) -n $(CONCURRENCY); \
+	fi
 	$(MAKE) -C test check
 
 w32zip = $(PACKAGE_TARNAME)-$(PACKAGE_VERSION)-windows-$(host_cpu).zip
@@ -160,4 +186,37 @@ htmls:
 	done
 
 doc/pgbouncer.1 doc/pgbouncer.5:
-	$(MAKE) -C doc
+	$(MAKE) -C doc $(@F)
+
+lint:
+	flake8
+
+format-check: uncrustify
+	black --check .
+	isort --check .
+	./uncrustify -c uncrustify.cfg --check include/*.h src/*.c -L WARN
+
+format: uncrustify
+	$(MAKE) format-c
+	$(MAKE) format-python
+
+format-python: uncrustify
+	black .
+	isort .
+
+format-c: uncrustify
+	./uncrustify -c uncrustify.cfg --replace --no-backup include/*.h src/*.c -L WARN
+
+UNCRUSTIFY_VERSION=0.77.1
+
+uncrustify:
+	temp=$$(mktemp -d) \
+		&& cd $$temp \
+		&& curl -L https://github.com/uncrustify/uncrustify/archive/refs/tags/uncrustify-$(UNCRUSTIFY_VERSION).tar.gz --output uncrustify.tar.gz \
+		&& tar xzf uncrustify.tar.gz \
+		&& cd uncrustify-uncrustify-$(UNCRUSTIFY_VERSION) \
+		&& mkdir -p build \
+		&& cd build \
+		&& cmake .. \
+		&& $(MAKE) \
+		&& cp uncrustify $(CURDIR)/uncrustify

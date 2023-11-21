@@ -9,6 +9,7 @@
  */
 
 #include "bouncer.h"
+#include "win32support.h"
 
 #if defined(UNICODE) || defined(_UNICODE)
 #error This code does not support wide characters.
@@ -77,7 +78,7 @@ static void WINAPI win32_servicehandler(DWORD request)
 	case SERVICE_CONTROL_STOP:
 	case SERVICE_CONTROL_SHUTDOWN:
 		win32_setservicestatus(SERVICE_STOP_PENDING);
-		cf_shutdown = 2;
+		cf_shutdown = SHUTDOWN_IMMEDIATE;
 		break;
 	case SERVICE_CONTROL_INTERROGATE:
 		SetServiceStatus(hStatus, &svcStatus);

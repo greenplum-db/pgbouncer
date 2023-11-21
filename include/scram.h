@@ -24,11 +24,10 @@
 
 void free_scram_state(ScramState *scram_state);
 
-typedef enum PasswordType
-{
-    PASSWORD_TYPE_PLAINTEXT = 0,
-    PASSWORD_TYPE_MD5,
-    PASSWORD_TYPE_SCRAM_SHA_256
+typedef enum PasswordType {
+	PASSWORD_TYPE_PLAINTEXT = 0,
+	PASSWORD_TYPE_MD5,
+	PASSWORD_TYPE_SCRAM_SHA_256
 } PasswordType;
 
 PasswordType get_password_type(const char *shadow_pass);
@@ -76,4 +75,4 @@ bool verify_client_proof(ScramState *state, const char *ClientProof);
 
 bool scram_verify_plain_password(PgSocket *client,
 				 const char *username, const char *password,
-				 const char *verifier);
+				 const char *secret);
