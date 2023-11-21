@@ -34,6 +34,8 @@
 #include <openssl/evp.h>
 #endif
 
+#include <openssl/evp.h>
+
 int log_socket_prefix(enum LogLevel lev, void *ctx, char *dst, unsigned int dstlen)
 {
 	const struct PgSocket *sock = ctx;
