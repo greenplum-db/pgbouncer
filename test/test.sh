@@ -177,39 +177,6 @@ rm -f $BOUNCER_LOG
 # 	if $use_unix_sockets; then
 # 		echo "unix_socket_directories = '/tmp'" >> pgdata/postgresql.conf
 # 	fi
-# 	# We need to make the log go to stderr so that the tests can
-# 	# check what is being logged.  This should be the default, but
-# 	# some packagings change the default configuration.
-# 	cat >>pgdata/postgresql.conf <<-EOF
-# 	logging_collector = off
-# 	log_destination = stderr
-# 	log_connections = on
-# 	EOF
-# 	if $use_unix_sockets; then
-# 		local='local'
-# 	else
-# 		local='#local'
-# 	fi
-# 	if $pg_supports_scram; then
-# 		cat >pgdata/pg_hba.conf <<-EOF
-# 		$local  p6   all                scram-sha-256
-# 		host   p6   all  127.0.0.1/32  scram-sha-256
-# 		host   p6   all  ::1/128       scram-sha-256
-# 		EOF
-# 	else
-# 		cat >pgdata/pg_hba.conf </dev/null
-# 	fi
-# 	cat >>pgdata/pg_hba.conf <<-EOF
-# 	$local  p4   all                password
-# 	host   p4   all  127.0.0.1/32  password
-# 	host   p4   all  ::1/128       password
-# 	$local  p5   all                md5
-# 	host   p5   all  127.0.0.1/32  md5
-# 	host   p5   all  ::1/128       md5
-# 	$local  all  all                trust
-# 	host   all  all  127.0.0.1/32  trust
-# 	host   all  all  ::1/128       trust
-# 	EOF
 # fi
 
 if $use_unix_sockets; then
