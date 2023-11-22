@@ -28,8 +28,11 @@
 
 #include <ldap.h>
 #include <pthread.h>
-#include <openssl/evp.h>
 #include <usual/fileutil.h>
+
+#ifdef USUAL_LIBSSL_FOR_TLS
+#include <openssl/evp.h>
+#endif
 
 /* The request is waiting in the queue or being authenticated */
 #define LDAP_STATUS_IN_PROGRESS  1
@@ -572,6 +575,7 @@ formatsearchfilter(char *filter, int length, const char *pattern, const char *us
 		cur_len = length - 1;
 	filter[cur_len] = '\0';
 }
+#ifdef USUAL_LIBSSL_FOR_TLS
 /*
  * LDAP password decryption
  */
@@ -625,6 +629,7 @@ int decrypt_ldap_password(const char* encrypt_txt, const char* key_txt, char* pa
 
     return depass_length;
 }
+#endif // USUAL_LIBSSL_FOR_TLS
 /*
  * Perform LDAP authentication
  */
@@ -703,15 +708,13 @@ checkldapauth(struct ldap_auth_request *request)
             char *home_dir = getenv("HOME");
             char ldapbindpass_filepath[NAME_MAX] = {0};
 
-            if (cf_auth_key_file == NULL)
-            {
+            if (cf_auth_key_file == NULL) {
                 log_error("The authentication key file was not presented");
                 return false;
             }
 
             ldap_key = load_file(cf_auth_key_file, NULL);
-            if (ldap_key == NULL)
-            {
+            if (ldap_key == NULL) {
                 log_error("Failed to load authentication key file \"%s\": %s", cf_auth_key_file, strerror(errno));
                 return false;
             }
@@ -719,14 +722,18 @@ checkldapauth(struct ldap_auth_request *request)
             strcpy(ldapbindpass_filepath, home_dir);
             strcat(ldapbindpass_filepath, "/.ldapbindpass");
             ldap_password = load_file(ldapbindpass_filepath, NULL);
-            if (ldap_password == NULL)
-            {
+            if (ldap_password == NULL) {
                 free(ldap_key);
                 log_error("Failed to load encrypted LDAP password file \"%s\": %s", ldapbindpass_filepath, strerror(errno));
                 return false;
             }
 
+#ifdef USUAL_LIBSSL_FOR_TLS
             result = decrypt_ldap_password(ldap_password, ldap_key, decrypted_password);
+#else
+            log_error("Encrypted authentication over the LDAP works only with the `--with-openssl` build flag");
+            return false;
+#endif // USUAL_LIBSSL_FOR_TLS
 
             free(ldap_key);
             free(ldap_password);

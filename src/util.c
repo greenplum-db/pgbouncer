@@ -516,6 +516,7 @@ const char *pga_details(const PgAddr *a, char *dst, int dstlen)
 	return dst;
 }
 
+#ifdef USUAL_LIBSSL_FOR_TLS
 int generate_key_iv(const char *password, const unsigned char *salt, const char *cipher, const char *digest,
                     unsigned char *key, unsigned char *iv)
 {
@@ -575,6 +576,7 @@ fail:
     log_error("input data could not be decrypted");
     return -1;
 }
+#endif // USUAL_LIBSSL_FOR_TLS
 
 bool cf_set_authdb(struct CfValue *cv, const char *value)
 {
