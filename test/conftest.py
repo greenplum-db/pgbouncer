@@ -173,12 +173,13 @@ async def bouncer(pg, tmp_path):
     await bouncer.cleanup()
 
 
-@pytest.fixture(autouse=True)
+# @pytest.fixture(autouse=True)
 def pg_log(pg):
     """Prints the Postgres logs that were created during the test
-
     This can be useful for debugging a failure.
     """
+    yield
+    return
     with pg.log_path.open() as f:
         f.seek(0, os.SEEK_END)
         yield

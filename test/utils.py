@@ -25,14 +25,18 @@ import psycopg
 TEST_DIR = Path(os.path.dirname(os.path.realpath(__file__)))
 os.chdir(TEST_DIR)
 
-PGDATA = TEST_DIR / "pgdata"
+PGDATA = os.environ.get('PGDATA')
+if PGDATA is None:
+    PGDATA = TEST_DIR / "pgdata"
 PGHOST = "127.0.0.1"
 
 BOUNCER_LOG = TEST_DIR / "test.log"
 BOUNCER_INI = TEST_DIR / "test.ini"
 BOUNCER_AUTH = TEST_DIR / "userlist.txt"
 BOUNCER_PID = TEST_DIR / "test.pid"
-BOUNCER_PORT = 6667
+BOUNCER_PORT = os.environ.get('BOUNCER_PORT')
+if BOUNCER_PORT is None:
+    BOUNCER_PORT = 6667
 BOUNCER_EXE = TEST_DIR / "../pgbouncer"
 NEW_CA_SCRIPT = TEST_DIR / "ssl" / "newca.sh"
 NEW_SITE_SCRIPT = TEST_DIR / "ssl" / "newsite.sh"
@@ -154,7 +158,7 @@ TLS_SUPPORT = get_tls_support()
 
 # this is out of ephemeral port range for many systems hence
 # it is a lower change that it will conflict with "in-use" ports
-PORT_LOWER_BOUND = 10200
+PORT_LOWER_BOUND = 6999
 
 # ephemeral port start on many Linux systems
 PORT_UPPER_BOUND = 32768
@@ -193,7 +197,7 @@ class QueryRunner:
         self.host = host
         self.port = port
         self.default_db = "postgres"
-        self.default_user = "postgres"
+        self.default_user = "gpadmin"
 
     def set_default_connection_options(self, options):
         options.setdefault("dbname", self.default_db)
@@ -474,17 +478,18 @@ class Postgres(QueryRunner):
     def __init__(self, pgdata):
         self.port_lock = PortLock()
         super().__init__("127.0.0.1", self.port_lock.port)
-        self.pgdata = pgdata
+        global PGDATA
+        self.pgdata = Path(PGDATA)
         self.log_path = self.pgdata / "pg.log"
         self.connections = {}
         self.cursors = {}
         self.restarted = False
 
     def initdb(self):
-        run(
-            f"initdb -A trust --nosync --username postgres --pgdata {self.pgdata}",
-            stdout=subprocess.DEVNULL,
-        )
+        # run(
+        #     f"initdb -A trust --nosync --username postgres --pgdata {self.pgdata}",
+        #     stdout=subprocess.DEVNULL,
+        # )
 
         with self.conf_path.open(mode="a") as pgconf:
             if USE_UNIX_SOCKETS:
@@ -505,14 +510,36 @@ class Postgres(QueryRunner):
             pgconf.write("extra_float_digits = 1\n")
 
     def pgctl(self, command, **kwargs):
+        if "start" in command:
+            run("gpstart -a")
+        elif "stop" in command:
+            run("gpstop -aM fast")
+        elif "restart" in command:
+            run("gpstop -ar")
+        elif "reload" in command:
+            pass
+            # run(f"cp {self.pgdata}/postgresql.conf.orig {self.pgdata}/postgresql.conf")
+            # run(f"for ln in "$@"; do   echo "$ln" >> {self.pgdata}/postgresql.conf; done")
+            # run("gpstop -u")
+        return
         run(f"pg_ctl -w --pgdata {self.pgdata} {command}", **kwargs)
 
     def apgctl(self, command, **kwargs):
+        if "start" in command:
+            return asyncio.create_subprocess_shell("gpstart -a")
+        elif "stop" in command:
+            run("gpstop -aM fast")
+            return asyncio.create_subprocess_shell("gpstop -aM fast")
+        elif "restart" in command:
+            return asyncio.create_subprocess_shell("gpstop -ar")
+
         return asyncio.create_subprocess_shell(
             f"pg_ctl -w --pgdata {self.pgdata} {command}", **kwargs
         )
 
     def start(self):
+        # run("gpstart -a")
+        return
         try:
             self.pgctl(f'-o "-p {self.port}" -l {self.log_path} start')
         except Exception:
@@ -522,6 +549,8 @@ class Postgres(QueryRunner):
             raise
 
     def stop(self):
+        run("gpstop -aM fast")
+        return
         self.pgctl("-m fast stop", check=False)
 
     def cleanup(self):
@@ -529,7 +558,9 @@ class Postgres(QueryRunner):
         self.port_lock.release()
 
     def restart(self):
+        run("gpstop -ar")
         self.restarted = True
+        return
         self.stop()
         self.start()
 
