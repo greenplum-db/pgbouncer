@@ -731,6 +731,8 @@ checkldapauth(struct ldap_auth_request *request)
 #ifdef USUAL_LIBSSL_FOR_TLS
             result = decrypt_ldap_password(ldap_password, ldap_key, decrypted_password);
 #else
+            free(ldap_key);
+            free(ldap_password);
             log_error("Encrypted authentication over the LDAP works only with the `--with-openssl` build flag");
             return false;
 #endif // USUAL_LIBSSL_FOR_TLS
