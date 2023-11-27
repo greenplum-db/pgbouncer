@@ -1,6 +1,8 @@
 [submodule "lib"]
 	path = lib
-	url = https://github.com/greenplum-db/libusual.git
+	url = https://github.com/libusual/libusual.git
+    commit = f8d49e2b97c2026aea420711d7d09dee7c8e81ee
 [submodule "uthash"]
 	path = uthash
 	url = https://github.com/troydhanson/uthash.git
+    commit = ca98384ce7f30beb216f9a0bc88a3b4340ead729
