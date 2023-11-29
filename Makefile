@@ -67,7 +67,7 @@ pgbouncer_SOURCES = \
 	include/common/uthash_lowercase.h
 
 UTHASH = uthash
-COMMON_CFLAGS = -Wall -DLDAP_DEPRECATED
+COMMON_CFLAGS = -g -Wall -DLDAP_DEPRECATED
 pgbouncer_CPPFLAGS = -Iinclude $(CARES_CFLAGS) $(LIBEVENT_CFLAGS) $(TLS_CPPFLAGS) $(COMMON_CFLAGS)
 pgbouncer_CPPFLAGS += -I$(UTHASH)/src
 
