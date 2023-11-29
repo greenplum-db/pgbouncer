@@ -44,6 +44,9 @@ function install_dependencies() {
             echo Unknown system: $TARGET_OS
             ;;
     esac
+
+    # install python dependencies
+    pip install -r $HOME_DIR/pgbouncer_src/requirements.txt
 }
 
 function setup_gpdb_cluster() {
