@@ -76,6 +76,9 @@ function init_platform() {
         ubuntu*)
             export platform=debian
             ;;
+        rhel9|oel9|rocky9) # Use one package for three platform
+            export platform=el9
+            ;;
         *)
             export platform=$TARGET_OS
             ;;
