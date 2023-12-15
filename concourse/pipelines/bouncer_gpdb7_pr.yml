@@ -1,0 +1,196 @@
+## ======================================================================
+## resources
+## ======================================================================
+resource_types:
+  - name: pull_request
+    type: registry-image
+    source:
+      repository: teliaoss/github-pr-resource
+      tag: v0.21.0
+  - name: gcs
+    type: docker-image
+    source:
+      repository: frodenas/gcs-resource
+
+resources:
+  - name: pgbouncer_pr
+    type: pull_request
+    source:
+      access_token: ((gpdb-git-access-token))
+      base_branch: "main"
+      repository: greenplum-db/pgbouncer
+      disable_forks: true
+      required_review_approvals: 1
+      ignore_paths:
+        - doc/*
+        - README*
+
+  - name: gpdb7_src
+    source:
+      branch: main
+      ignore_paths:
+        - gpdb-doc/*
+        - README*
+      uri: https://github.com/greenplum-db/gpdb.git
+    type: git
+
+  - name: gpdb7-rocky8-build
+    source:
+      repository: gcr.io/data-gpdb-public-images/gpdb7-rocky8-build
+      tag: latest
+    type: registry-image
+  - name: gpdb7-rocky8-test
+    source:
+      repository: gcr.io/data-gpdb-public-images/gpdb7-rocky8-test
+      tag: latest
+    type: registry-image
+  - name: bin_gpdb7_rocky8
+    source:
+      bucket: pivotal-gpdb-concourse-resources-prod
+      json_key: ((concourse-gcs-resources-service-account-key))
+      regexp: server/published/main/server-rc-(.*)-el8_x86_64.debug.tar.gz
+    type: gcs
+
+  - name: gpdb7-rocky9-build
+    source:
+      repository: gcr.io/data-gpdb-public-images/gpdb7-rocky9-build
+      tag: latest
+    type: registry-image
+  - name: gpdb7-rocky9-test
+    source:
+      repository: gcr.io/data-gpdb-public-images/gpdb7-rocky9-test
+      tag: latest
+    type: registry-image
+  - name: bin_gpdb7_rocky9
+    source:
+      bucket: pivotal-gpdb-concourse-resources-prod
+      json_key: ((concourse-gcs-resources-service-account-key))
+      regexp: server/published/main/server-rc-(.*)-el9_x86_64.debug.tar.gz
+    type: gcs
+
+jobs:
+  - name: test_pgbouncer_gpdb7_rocky8
+    plan:
+      - in_parallel:
+          - get: pgbouncer_pr
+            trigger: true
+            version: every
+          - get: gpdb7-rocky8-build
+          - get: gpdb7-rocky8-test
+          - get: gpdb7_src
+          - get: bin_gpdb
+            resource: bin_gpdb7_rocky8
+      - put: pgbouncer_pr
+        params:
+          path: pgbouncer_pr
+          status: pending
+      - task: build_pgbouncer
+        input_mapping:
+          pgbouncer_src: pgbouncer_pr
+          gpdb_src: gpdb7_src
+        config:
+          platform: linux
+          inputs:
+          - name: pgbouncer_src
+          - name: gpdb_src
+          outputs:
+          - name: pgbouncer_compiled
+          run:
+            path: pgbouncer_src/concourse/scripts/build.bash
+        image: gpdb7-rocky8-build
+        params:
+          SKIP_TAR: "true"
+          TARGET_OS: rocky8
+        on_failure: &pr_failure
+          put: pgbouncer_pr
+          params:
+            path: pgbouncer_pr
+            status: failure
+        timeout: 30m
+      - task: psql_test
+        input_mapping:
+          pgbouncer_src: pgbouncer_compiled
+          gpdb_src: gpdb7_src
+        config:
+          platform: linux
+          inputs:
+            - name: pgbouncer_src
+            - name: gpdb_src
+            - name: bin_gpdb
+          run:
+            path: pgbouncer_src/concourse/scripts/psql_test.bash
+        image: gpdb7-rocky8-test
+        params:
+          TARGET_OS: rocky8
+        on_failure: *pr_failure
+        timeout: 30m
+
+  - name: test_pgbouncer_gpdb7_rocky9
+    plan:
+      - in_parallel:
+          - get: pgbouncer_pr
+            trigger: true
+            version: every
+          - get: gpdb7-rocky9-build
+          - get: gpdb7-rocky9-test
+          - get: gpdb7_src
+          - get: bin_gpdb
+            resource: bin_gpdb7_rocky9
+      - put: pgbouncer_pr
+        params:
+          path: pgbouncer_pr
+          status: pending
+      - task: build_pgbouncer
+        input_mapping:
+          pgbouncer_src: pgbouncer_pr
+          gpdb_src: gpdb7_src
+        config:
+          platform: linux
+          inputs:
+          - name: pgbouncer_src
+          - name: gpdb_src
+          outputs:
+          - name: pgbouncer_compiled
+          run:
+            path: pgbouncer_src/concourse/scripts/build.bash
+        image: gpdb7-rocky9-build
+        params:
+          SKIP_TAR: "true"
+          TARGET_OS: rocky9
+        on_failure: &pr_failure
+          put: pgbouncer_pr
+          params:
+            path: pgbouncer_pr
+            status: failure
+        timeout: 30m
+      - task: psql_test
+        input_mapping:
+          pgbouncer_src: pgbouncer_compiled
+          gpdb_src: gpdb7_src
+        config:
+          platform: linux
+          inputs:
+            - name: pgbouncer_src
+            - name: gpdb_src
+            - name: bin_gpdb
+          run:
+            path: pgbouncer_src/concourse/scripts/psql_test.bash
+        image: gpdb7-rocky9-test
+        params:
+          TARGET_OS: rocky9
+        on_failure: *pr_failure
+        timeout: 30m
+
+  - name: set-pr-status
+    plan:
+      - in_parallel:
+          - get: pgbouncer_pr
+            trigger: true
+            passed:
+              - test_pgbouncer_gpdb7_rocky8
+              - test_pgbouncer_gpdb7_rocky9
+      - put: report_pr_success
+        resource: pgbouncer_pr
+        params:
+          path: pgbouncer_pr
+          status: success
