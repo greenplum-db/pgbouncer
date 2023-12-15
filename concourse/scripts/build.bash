@@ -87,6 +87,9 @@ function build_tar_for_release() {
     if [ "x$platform" == "xunknown" ]; then
         return
     fi
+    if [ "x$SKIP_TAR" == "xtrue" ]; then
+        return
+    fi
     pushd pgbouncer_src
     cp concourse/scripts/install_gpdb_component ${HOME_DIR}/bin_pgbouncer/
     useradd gpadmin

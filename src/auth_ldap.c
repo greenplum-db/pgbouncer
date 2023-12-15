@@ -703,6 +703,10 @@ checkldapauth(struct ldap_auth_request *request)
 		 */
         if (ldap_password != NULL && strcmp(ldap_password, "$bindpasswd") == 0)
         {
+#ifndef USUAL_LIBSSL_FOR_TLS
+			log_error("Encrypted authentication over the LDAP works only with the `--with-openssl` build flag");
+			return false;
+#else
             int result = 0;
             char* ldap_key = NULL;
             char *home_dir = getenv("HOME");
@@ -727,19 +731,11 @@ checkldapauth(struct ldap_auth_request *request)
                 log_error("Failed to load encrypted LDAP password file \"%s\": %s", ldapbindpass_filepath, strerror(errno));
                 return false;
             }
-
-#ifdef USUAL_LIBSSL_FOR_TLS
             result = decrypt_ldap_password(ldap_password, ldap_key, decrypted_password);
-#else
-            free(ldap_key);
-            free(ldap_password);
-            log_error("Encrypted authentication over the LDAP works only with the `--with-openssl` build flag");
-            return false;
-#endif // USUAL_LIBSSL_FOR_TLS
-
             free(ldap_key);
             free(ldap_password);
             ldap_password = (result >= 0) ? decrypted_password : NULL;
+#endif // USUAL_LIBSSL_FOR_TLS
         }
 
 		/*
