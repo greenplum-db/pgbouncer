@@ -103,7 +103,6 @@ function build_tar_for_release() {
 }
 
 function _main() {
-    install_dependencies
     build_pgbouncer
     build_tar_for_release
     build_hba_test
