@@ -93,9 +93,9 @@ resources:
     type: registry-image
   - name: bin_gpdb6_rocky9_rc
     source:
-      bucket: pivotal-gpdb-concourse-resources-prod
-      json_key: ((concourse-gcs-resources-service-account-key))
-      regexp: server/published/gpdb6/server-rc-(.*)-rocky9_x86_64.debug.tar.gz
+      bucket: ((dataflow/gpdb6-bin-bucket-name))
+      json_key: ((dataflow/concourse-gcs-resources-service-account-key))
+      regexp: server/published/gpdb6/server-rc-(.*)-rhel9_x86_64.tar.gz
     type: gcs
 jobs:
   - name: test_pgbouncer_gpdb6_centos7

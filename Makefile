@@ -86,7 +86,7 @@ dist_doc_DATA = README.md NEWS.md \
 DISTCLEANFILES = config.mak config.status lib/usual/config.h config.log
 
 DIST_SUBDIRS = doc test
-dist_man_MANS = doc/pgbouncer.1 doc/pgbouncer.5
+#dist_man_MANS = doc/pgbouncer.1 doc/pgbouncer.5
 
 # files in tgz
 EXTRA_DIST = AUTHORS COPYRIGHT Makefile config.mak.in config.sub config.guess \
