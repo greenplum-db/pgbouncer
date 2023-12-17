@@ -60,13 +60,12 @@ resources:
       tag: latest
     type: registry-image
 
-  - name: bin_gpdb6_rocky8_rc
+  - name: bin_gpdb6_rock8
     source:
-      bucket: pivotal-gpdb-concourse-resources-prod
+      bucket: pivotal-gpdb-concourse-resources-intermediates-prod
       json_key: ((concourse-gcs-resources-service-account-key))
-      regexp: server/published/gpdb6/server-rc-(.*)-rocky8_x86_64.debug.tar.gz
+      versioned_file: 6X_STABLE/bin_gpdb/bin_gpdb.tar.gz
     type: gcs
-
   - name: gpdb6-sles12-build
     source:
       password: ((data-gpdb-private-images-container-registry-readonly-service-account-key))
@@ -160,7 +159,7 @@ jobs:
           - get: gpdb6-rocky8-test
           - get: gpdb6_src
           - get: bin_gpdb
-            resource: bin_gpdb6_rocky8_rc
+            resource: bin_gpdb6_rock8
       - put: pgbouncer_pr
         params:
           path: pgbouncer_pr
