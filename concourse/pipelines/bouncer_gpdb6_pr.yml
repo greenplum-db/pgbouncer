@@ -21,7 +21,7 @@ resources:
       base_branch: "6X"
       repository: greenplum-db/pgbouncer
       disable_forks: true
-      #required_review_approvals: 1
+      required_review_approvals: 1
       ignore_paths:
         - doc/*
         - README*
