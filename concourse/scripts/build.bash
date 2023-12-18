@@ -26,7 +26,7 @@ function install_dependencies() {
             yum update -y
             yum install -y pandoc
             ;;
-        rhel8|oel8|rocky8)
+        rhel8|oel8|rocky8|rhel9|oel9|rocky9)
             dnf update -y
             dnf install -y epel-release
             # dnf install -y pandoc
@@ -75,6 +75,9 @@ function init_platform() {
             ;;
         ubuntu*)
             export platform=debian
+            ;;
+        rhel9|oel9|rocky9) # Use one package for three platform
+            export platform=el9
             ;;
         *)
             export platform=$TARGET_OS

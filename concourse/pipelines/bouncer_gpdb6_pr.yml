@@ -1,4 +1,3 @@
-## Deprecated because gpdb6 and gpdb7 should use different pr pipelines
 ## ======================================================================
 ## resources
 ## ======================================================================
@@ -18,7 +17,7 @@ resources:
     type: pull_request
     source:
       access_token: ((gpdb-git-access-token))
-      base_branch: "main"
+      base_branch: "6X"
       repository: greenplum-db/pgbouncer
       disable_forks: true
       required_review_approvals: 1
@@ -60,13 +59,12 @@ resources:
       tag: latest
     type: registry-image
 
-  - name: bin_gpdb6_rocky8
+  - name: bin_gpdb6_rock8
     source:
       bucket: pivotal-gpdb-concourse-resources-intermediates-prod
       json_key: ((concourse-gcs-resources-service-account-key))
-      versioned_file: 6X_STABLE/bin_gpdb_rocky8/bin_gpdb.tar.gz
+      versioned_file: 6X_STABLE/bin_gpdb/bin_gpdb.tar.gz
     type: gcs
-
   - name: gpdb6-sles12-build
     source:
       password: ((data-gpdb-private-images-container-registry-readonly-service-account-key))
@@ -81,33 +79,22 @@ resources:
       tag: latest
     type: registry-image
 
-  - name: gpdb7_src
+  - name: gpdb6-rocky9-build
     source:
-      branch: main
-      ignore_paths:
-        - gpdb-doc/*
-        - README*
-      uri: https://github.com/greenplum-db/gpdb.git
-    type: git
-
-  - name: gpdb7-rocky8-build
-    source:
-      repository: gcr.io/data-gpdb-public-images/gpdb7-rocky8-build
+      repository: gcr.io/data-gpdb-public-images/gpdb6-rocky9-build
       tag: latest
     type: registry-image
-  - name: gpdb7-rocky8-test
+  - name: gpdb6-rocky9-test
     source:
-      repository: gcr.io/data-gpdb-public-images/gpdb7-rocky8-test
+      repository: gcr.io/data-gpdb-public-images/gpdb6-rocky9-test
       tag: latest
     type: registry-image
-
-  - name: bin_gpdb7_rocky8
+  - name: bin_gpdb6_rocky9_rc
     source:
-      bucket: pivotal-gpdb-concourse-resources-intermediates-prod
-      json_key: ((concourse-gcs-resources-service-account-key))
-      versioned_file: gpdb_main/bin_gpdb/bin_gpdb.tar.gz
+      bucket: ((dataflow/gpdb6-bin-bucket-name))
+      json_key: ((dataflow/concourse-gcs-resources-service-account-key))
+      regexp: server/published/gpdb6/server-rc-(.*)-rhel9_x86_64.tar.gz
     type: gcs
-
 jobs:
   - name: test_pgbouncer_gpdb6_centos7
     plan:
@@ -171,7 +158,7 @@ jobs:
           - get: gpdb6-rocky8-test
           - get: gpdb6_src
           - get: bin_gpdb
-            resource: bin_gpdb6_rocky8
+            resource: bin_gpdb6_rock8
       - put: pgbouncer_pr
         params:
           path: pgbouncer_pr
@@ -211,6 +198,58 @@ jobs:
         image: gpdb6-rocky8-test
         params:
           TARGET_OS: rocky8
+        on_failure: *pr_failure
+        timeout: 30m
+  - name: test_pgbouncer_gpdb6_rocky9
+    plan:
+      - in_parallel:
+          - get: pgbouncer_pr
+            trigger: true
+            version: every
+          - get: gpdb6-rocky9-build
+          - get: gpdb6-rocky9-test
+          - get: gpdb6_src
+          - get: bin_gpdb
+            resource: bin_gpdb6_rocky9_rc
+      - put: pgbouncer_pr
+        params:
+          path: pgbouncer_pr
+          status: pending
+      - task: build_pgbouncer
+        input_mapping:
+          pgbouncer_src: pgbouncer_pr
+          gpdb_src: gpdb6_src
+        config:
+          platform: linux
+          inputs:
+          - name: pgbouncer_src
+          - name: gpdb_src
+          outputs:
+          - name: pgbouncer_compiled
+          run:
+            path: pgbouncer_src/concourse/scripts/build.bash
+        image: gpdb6-rocky9-build
+        on_failure: &pr_failure
+          put: pgbouncer_pr
+          params:
+            path: pgbouncer_pr
+            status: failure
+        timeout: 30m
+      - task: psql_test
+        input_mapping:
+          pgbouncer_src: pgbouncer_compiled
+          gpdb_src: gpdb6_src
+        config:
+          platform: linux
+          inputs:
+            - name: pgbouncer_src
+            - name: gpdb_src
+            - name: bin_gpdb
+          run:
+            path: pgbouncer_src/concourse/scripts/psql_test.bash
+        image: gpdb6-rocky9-test
+        params:
+          TARGET_OS: rocky9
         on_failure: *pr_failure
         timeout: 30m
 
@@ -274,59 +313,6 @@ jobs:
             status: failure
         timeout: 30m
 
-  - name: test_pgbouncer_gpdb7_rocky8
-    plan:
-      - in_parallel:
-          - get: pgbouncer_pr
-            trigger: true
-            version: every
-          - get: gpdb7-rocky8-build
-          - get: gpdb7-rocky8-test
-          - get: gpdb7_src
-          - get: bin_gpdb
-            resource: bin_gpdb7_rocky8
-      - put: pgbouncer_pr
-        params:
-          path: pgbouncer_pr
-          status: pending
-      - task: build_pgbouncer
-        input_mapping:
-          pgbouncer_src: pgbouncer_pr
-          gpdb_src: gpdb7_src
-        config:
-          platform: linux
-          inputs:
-          - name: pgbouncer_src
-          - name: gpdb_src
-          outputs:
-          - name: pgbouncer_compiled
-          run:
-            path: pgbouncer_src/concourse/scripts/build.bash
-        image: gpdb7-rocky8-build
-        on_failure: &pr_failure
-          put: pgbouncer_pr
-          params:
-            path: pgbouncer_pr
-            status: failure
-        timeout: 30m
-      - task: psql_test
-        input_mapping:
-          pgbouncer_src: pgbouncer_compiled
-          gpdb_src: gpdb7_src
-        config:
-          platform: linux
-          inputs:
-            - name: pgbouncer_src
-            - name: gpdb_src
-            - name: bin_gpdb
-          run:
-            path: pgbouncer_src/concourse/scripts/psql_test.bash
-        image: gpdb7-rocky8-test
-        params:
-          TARGET_OS: rocky8
-        on_failure: *pr_failure
-        timeout: 30m
-
   - name: set-pr-status
     plan:
       - in_parallel:
@@ -335,7 +321,6 @@ jobs:
             passed:
               - test_pgbouncer_gpdb6_centos7
               - test_pgbouncer_gpdb6_rocky8
-              - test_pgbouncer_gpdb7_rocky8
               - build_pgbouncer_gpdb6_photon3
               - build_pgbouncer_gpdb6_sles12
       - put: report_pr_success
