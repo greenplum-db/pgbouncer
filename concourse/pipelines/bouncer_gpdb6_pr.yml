@@ -395,6 +395,8 @@ jobs:
               - test_pgbouncer_gpdb6_rocky8
               - build_pgbouncer_gpdb6_photon3
               - build_pgbouncer_gpdb6_sles12
+              - test_pgbouncer_gpdb6_rocky9
+              - test_pgbouncer_gpdb6_centos6
       - put: report_pr_success
         resource: pgbouncer_pr
         params:
