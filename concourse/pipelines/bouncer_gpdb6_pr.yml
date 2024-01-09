@@ -40,6 +40,25 @@ resources:
         - gpdb-doc/*
         - README*
 
+  - name: gpdb6-centos6-build
+    source:
+      repository: gcr.io/data-gpdb-public-images/gpdb6-centos6-build
+      tag: latest
+    type: registry-image
+
+  - name: gpdb6-centos6-test
+    source:
+      repository: gcr.io/data-gpdb-public-images/gpdb6-centos6-test
+      tag: latest
+    type: registry-image
+
+  - name: bin_gpdb6_centos6
+    source:
+      bucket: pivotal-gpdb-concourse-resources-intermediates-prod
+      json_key: ((concourse-gcs-resources-service-account-key))
+      versioned_file: 6X_STABLE_centos6/bin_gpdb/bin_gpdb.tar.gz
+    type: gcs
+
   - name: bin_gpdb6_centos7
     type: gcs
     source:
@@ -96,6 +115,59 @@ resources:
       regexp: server/published/gpdb6/server-rc-(.*)-rhel9_x86_64.tar.gz
     type: gcs
 jobs:
+  - name: test_pgbouncer_gpdb6_centos6
+    plan:
+      - in_parallel:
+          - get: pgbouncer_pr
+            trigger: true
+            version: every
+          - get: gpdb6-centos6-test
+          - get: gpdb6-centos6-build
+          - get: gpdb6_src
+          - get: bin_gpdb
+            resource: bin_gpdb6_centos6
+      - put: pgbouncer_pr
+        params:
+          path: pgbouncer_pr
+          status: pending
+      - task: build_pgbouncer
+        input_mapping:
+          pgbouncer_src: pgbouncer_pr
+          gpdb_src: gpdb6_src
+        config:
+          platform: linux
+          inputs:
+          - name: pgbouncer_src
+          - name: gpdb_src
+          outputs:
+          - name: pgbouncer_compiled
+          run:
+            path: pgbouncer_src/concourse/scripts/build.bash
+        image: gpdb6-centos6-build
+        on_failure: &pr_failure
+          put: pgbouncer_pr
+          params:
+            path: pgbouncer_pr
+            status: failure
+        timeout: 30m
+      - task: psql_test
+        input_mapping:
+          pgbouncer_src: pgbouncer_compiled
+          gpdb_src: gpdb6_src
+        config:
+          platform: linux
+          inputs:
+            - name: pgbouncer_src
+            - name: gpdb_src
+            - name: bin_gpdb
+          run:
+            path: pgbouncer_src/concourse/scripts/psql_test.bash
+        image: gpdb6-centos6-test
+        params:
+          TARGET_OS: centos6
+        on_failure: *pr_failure
+        timeout: 30m
+
   - name: test_pgbouncer_gpdb6_centos7
     plan:
       - in_parallel:
@@ -323,6 +395,8 @@ jobs:
               - test_pgbouncer_gpdb6_rocky8
               - build_pgbouncer_gpdb6_photon3
               - build_pgbouncer_gpdb6_sles12
+              - test_pgbouncer_gpdb6_rocky9
+              - test_pgbouncer_gpdb6_centos6
       - put: report_pr_success
         resource: pgbouncer_pr
         params:
